@@ -188,7 +188,18 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "tab", "down":
+		case "tab":
+			// On path field: let textinput accept suggestion, then move to next field
+			if d.focusIndex == 1 {
+				d.pathInput, cmd = d.pathInput.Update(msg)
+			}
+			// Move to next field
+			d.focusIndex = (d.focusIndex + 1) % 3
+			d.updateFocus()
+			return d, cmd
+
+		case "down":
+			// Down always navigates fields (Ctrl+N for suggestions)
 			d.focusIndex = (d.focusIndex + 1) % 3
 			d.updateFocus()
 			return d, nil
