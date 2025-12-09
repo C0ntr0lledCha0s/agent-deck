@@ -13,9 +13,11 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 // Table column widths for list command output
 const (
@@ -24,6 +26,55 @@ const (
 	tableColPath      = 40
 	tableColIDDisplay = 12
 )
+
+// init sets up color profile for consistent terminal colors across environments
+func init() {
+	initColorProfile()
+}
+
+// initColorProfile configures lipgloss color profile based on terminal capabilities.
+// This ensures colors work out-of-the-box even in SSH sessions or basic terminals.
+func initColorProfile() {
+	// Allow user override via environment variable
+	// AGENTDECK_COLOR: truecolor, 256, 16, none
+	if colorEnv := os.Getenv("AGENTDECK_COLOR"); colorEnv != "" {
+		switch strings.ToLower(colorEnv) {
+		case "truecolor", "true", "24bit":
+			lipgloss.SetColorProfile(termenv.TrueColor)
+			return
+		case "256", "ansi256":
+			lipgloss.SetColorProfile(termenv.ANSI256)
+			return
+		case "16", "ansi", "basic":
+			lipgloss.SetColorProfile(termenv.ANSI)
+			return
+		case "none", "off", "ascii":
+			lipgloss.SetColorProfile(termenv.Ascii)
+			return
+		}
+	}
+
+	// Auto-detect with sensible defaults
+	// Check COLORTERM for truecolor support
+	colorTerm := os.Getenv("COLORTERM")
+	if colorTerm == "truecolor" || colorTerm == "24bit" {
+		lipgloss.SetColorProfile(termenv.TrueColor)
+		return
+	}
+
+	// Check TERM for 256 color support
+	term := os.Getenv("TERM")
+	if strings.Contains(term, "256color") || strings.Contains(term, "xterm") {
+		// Most xterm-compatible terminals support 256 colors
+		lipgloss.SetColorProfile(termenv.ANSI256)
+		return
+	}
+
+	// Default: Force ANSI256 for consistent experience
+	// This works in most modern terminals and SSH sessions
+	// Hex colors will be automatically converted to nearest 256-color
+	lipgloss.SetColorProfile(termenv.ANSI256)
+}
 
 func main() {
 	// Extract global -p/--profile flag before subcommand dispatch
@@ -809,6 +860,7 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("Environment Variables:")
 	fmt.Println("  AGENTDECK_PROFILE    Default profile to use")
+	fmt.Println("  AGENTDECK_COLOR      Color mode: truecolor, 256, 16, none")
 	fmt.Println()
 	fmt.Println("Keyboard shortcuts (in TUI):")
 	fmt.Println("  n          New session")
