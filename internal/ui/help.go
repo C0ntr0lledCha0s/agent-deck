@@ -1,0 +1,167 @@
+package ui
+
+import (
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// HelpOverlay shows keyboard shortcuts in a modal
+type HelpOverlay struct {
+	visible bool
+	width   int
+	height  int
+}
+
+// NewHelpOverlay creates a new help overlay
+func NewHelpOverlay() *HelpOverlay {
+	return &HelpOverlay{}
+}
+
+// Show makes the help overlay visible
+func (h *HelpOverlay) Show() {
+	h.visible = true
+}
+
+// Hide hides the help overlay
+func (h *HelpOverlay) Hide() {
+	h.visible = false
+}
+
+// IsVisible returns whether the help overlay is visible
+func (h *HelpOverlay) IsVisible() bool {
+	return h.visible
+}
+
+// SetSize sets the dimensions for centering
+func (h *HelpOverlay) SetSize(width, height int) {
+	h.width = width
+	h.height = height
+}
+
+// Update handles messages for the help overlay
+func (h *HelpOverlay) Update(msg tea.Msg) (*HelpOverlay, tea.Cmd) {
+	if !h.visible {
+		return h, nil
+	}
+
+	// Any key closes the help overlay
+	if _, ok := msg.(tea.KeyMsg); ok {
+		h.Hide()
+	}
+	return h, nil
+}
+
+// View renders the help overlay
+func (h *HelpOverlay) View() string {
+	if !h.visible {
+		return ""
+	}
+
+	// Define help sections
+	sections := []struct {
+		title string
+		items [][2]string // [key, description]
+	}{
+		{
+			title: "NAVIGATION",
+			items: [][2]string{
+				{"j / Down", "Move down"},
+				{"k / Up", "Move up"},
+				{"h / Left", "Collapse / parent"},
+				{"l / Right", "Expand / toggle"},
+				{"1-9", "Jump to group"},
+				{"Enter", "Attach / toggle"},
+			},
+		},
+		{
+			title: "SESSIONS",
+			items: [][2]string{
+				{"n", "New session"},
+				{"d", "Delete session"},
+				{"m", "Move to group"},
+				{"R", "Rename"},
+				{"u", "Mark unread"},
+				{"K / J", "Reorder up/down"},
+			},
+		},
+		{
+			title: "GROUPS",
+			items: [][2]string{
+				{"g", "New group"},
+				{"G", "Rename group"},
+				{"Tab", "Toggle expand"},
+			},
+		},
+		{
+			title: "SEARCH & FILTER",
+			items: [][2]string{
+				{"/", "Open search"},
+				{"/waiting", "Filter waiting"},
+				{"/running", "Filter running"},
+				{"/idle", "Filter idle"},
+			},
+		},
+		{
+			title: "OTHER",
+			items: [][2]string{
+				{"i", "Import tmux sessions"},
+				{"r", "Refresh all"},
+				{"Ctrl+Q", "Detach from session"},
+				{"q", "Quit"},
+				{"?", "This help"},
+			},
+		},
+	}
+
+	// Build content
+	var content strings.Builder
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(ColorAccent).
+		MarginBottom(1)
+
+	sectionStyle := lipgloss.NewStyle().
+		Foreground(ColorCyan).
+		Bold(true)
+
+	keyStyle := lipgloss.NewStyle().
+		Foreground(ColorPurple).
+		Width(14)
+
+	descStyle := lipgloss.NewStyle().
+		Foreground(ColorText)
+
+	content.WriteString(titleStyle.Render("KEYBOARD SHORTCUTS"))
+	content.WriteString("\n\n")
+
+	for i, section := range sections {
+		content.WriteString(sectionStyle.Render(section.title))
+		content.WriteString("\n")
+		for _, item := range section.items {
+			content.WriteString("  ")
+			content.WriteString(keyStyle.Render(item[0]))
+			content.WriteString(descStyle.Render(item[1]))
+			content.WriteString("\n")
+		}
+		if i < len(sections)-1 {
+			content.WriteString("\n")
+		}
+	}
+
+	footerStyle := lipgloss.NewStyle().
+		Foreground(ColorComment).
+		Italic(true).
+		MarginTop(1)
+	content.WriteString("\n")
+	content.WriteString(footerStyle.Render("Press any key to close"))
+
+	// Wrap in dialog box
+	box := DialogBoxStyle.
+		Width(48).
+		Render(content.String())
+
+	return centerInScreen(box, h.width, h.height)
+}

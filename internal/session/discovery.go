@@ -80,13 +80,29 @@ func GroupByProject(instances []*Instance) map[string][]*Instance {
 	return groups
 }
 
-// FilterByQuery filters sessions by title, project path, or tool
+// FilterByQuery filters sessions by title, project path, tool, or status
+// Supports status filters: "waiting", "running", "idle", "error"
 func FilterByQuery(instances []*Instance, query string) []*Instance {
 	if query == "" {
 		return instances
 	}
 
-	query = strings.ToLower(query)
+	query = strings.ToLower(strings.TrimSpace(query))
+
+	// Check for status filters
+	statusFilters := map[string]Status{
+		"waiting": StatusWaiting,
+		"running": StatusRunning,
+		"idle":    StatusIdle,
+		"error":   StatusError,
+	}
+
+	// If query matches a status filter exactly, filter by status
+	if status, ok := statusFilters[query]; ok {
+		return filterByStatus(instances, status)
+	}
+
+	// Regular fuzzy search on title, path, tool
 	filtered := make([]*Instance, 0)
 
 	for _, inst := range instances {
@@ -97,6 +113,17 @@ func FilterByQuery(instances []*Instance, query string) []*Instance {
 		}
 	}
 
+	return filtered
+}
+
+// filterByStatus returns only instances with the specified status
+func filterByStatus(instances []*Instance, status Status) []*Instance {
+	filtered := make([]*Instance, 0)
+	for _, inst := range instances {
+		if inst.Status == status {
+			filtered = append(filtered, inst)
+		}
+	}
 	return filtered
 }
 

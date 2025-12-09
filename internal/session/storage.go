@@ -68,13 +68,40 @@ type GroupData struct {
 // Storage handles persistence of session data
 // Thread-safe with mutex protection for concurrent access
 type Storage struct {
-	path string
-	mu   sync.Mutex // Protects all file operations
+	path    string
+	profile string     // The profile this storage is for
+	mu      sync.Mutex // Protects all file operations
 }
 
-// NewStorage creates a new storage instance
+// NewStorage creates a new storage instance using the default profile.
+// It automatically runs migration from old layout if needed.
 func NewStorage() (*Storage, error) {
-	path, err := GetStoragePath()
+	return NewStorageWithProfile("")
+}
+
+// NewStorageWithProfile creates a storage instance for a specific profile.
+// If profile is empty, uses the effective profile (from env var or config).
+// Automatically runs migration from old layout if needed.
+func NewStorageWithProfile(profile string) (*Storage, error) {
+	// Run migration if needed (safe to call multiple times)
+	needsMigration, err := NeedsMigration()
+	if err != nil {
+		log.Printf("Warning: failed to check migration status: %v", err)
+	} else if needsMigration {
+		result, err := MigrateToProfiles()
+		if err != nil {
+			return nil, fmt.Errorf("migration failed: %w", err)
+		}
+		if result.Migrated {
+			log.Printf("Migration: %s", result.Message)
+		}
+	}
+
+	// Get effective profile
+	effectiveProfile := GetEffectiveProfile(profile)
+
+	// Get storage path for this profile
+	path, err := GetStoragePathForProfile(effectiveProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -87,13 +114,19 @@ func NewStorage() (*Storage, error) {
 	}
 
 	s := &Storage{
-		path: path,
+		path:    path,
+		profile: effectiveProfile,
 	}
 
 	// Clean up any leftover temp files from previous crashes
 	s.cleanupTempFiles()
 
 	return s, nil
+}
+
+// Profile returns the profile name this storage is using
+func (s *Storage) Profile() string {
+	return s.profile
 }
 
 // cleanupTempFiles removes any leftover .tmp files from previous crashes
@@ -429,14 +462,24 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 	return instances, data.Groups, nil
 }
 
-// GetStoragePath returns the path to the sessions.json file
+// GetStoragePath returns the path to the sessions.json file for the default profile.
+// DEPRECATED: Use GetStoragePathForProfile for explicit profile support.
 func GetStoragePath() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
+	return GetStoragePathForProfile(DefaultProfile)
+}
+
+// GetStoragePathForProfile returns the path to the sessions.json file for a specific profile.
+func GetStoragePathForProfile(profile string) (string, error) {
+	if profile == "" {
+		profile = DefaultProfile
 	}
 
-	return filepath.Join(homeDir, ".agent-deck", "sessions.json"), nil
+	profileDir, err := GetProfileDir(profile)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(profileDir, "sessions.json"), nil
 }
 
 // statusToString converts a Status enum to the string expected by tmux.ReconnectSessionWithStatus

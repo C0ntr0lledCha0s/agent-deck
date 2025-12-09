@@ -39,6 +39,9 @@ type Home struct {
 	width  int
 	height int
 
+	// Profile
+	profile string // The profile this Home is displaying
+
 	// Data (protected by instancesMu for background worker access)
 	instances   []*session.Instance
 	instancesMu sync.RWMutex // Protects instances slice for thread-safe background access
@@ -51,6 +54,7 @@ type Home struct {
 	newDialog     *NewDialog
 	groupDialog   *GroupDialog   // For creating/renaming groups
 	confirmDialog *ConfirmDialog // For confirming destructive actions
+	helpOverlay   *HelpOverlay   // For showing keyboard shortcuts
 
 	// State
 	cursor      int  // Selected item index in flatItems
@@ -116,12 +120,17 @@ type statusUpdateRequest struct {
 	flatItemIDs   []string // IDs of sessions in current flatItems order (for visible detection)
 }
 
-// NewHome creates a new home model
+// NewHome creates a new home model with the default profile
 func NewHome() *Home {
+	return NewHomeWithProfile("")
+}
+
+// NewHomeWithProfile creates a new home model with the specified profile
+func NewHomeWithProfile(profile string) *Home {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var storageWarning string
-	storage, err := session.NewStorage()
+	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		// Log the error and set warning - sessions won't persist but app will still function
 		log.Printf("Warning: failed to initialize storage, sessions won't persist: %v", err)
@@ -129,13 +138,21 @@ func NewHome() *Home {
 		storage = nil
 	}
 
+	// Get the actual profile name (could be resolved from env var or config)
+	actualProfile := session.DefaultProfile
+	if storage != nil {
+		actualProfile = storage.Profile()
+	}
+
 	h := &Home{
+		profile:          actualProfile,
 		storage:          storage,
 		storageWarning:   storageWarning,
 		search:           NewSearch(),
 		newDialog:        NewNewDialog(),
 		groupDialog:      NewGroupDialog(),
 		confirmDialog:    NewConfirmDialog(),
+		helpOverlay:      NewHelpOverlay(),
 		cursor:           0,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -235,6 +252,28 @@ func (h *Home) syncViewport() {
 	if h.viewOffset < 0 {
 		h.viewOffset = 0
 	}
+}
+
+// jumpToRootGroup jumps the cursor to the Nth root-level group (1-indexed)
+// Root groups are those at Level 0 (no "/" in path)
+func (h *Home) jumpToRootGroup(n int) {
+	if n < 1 || n > 9 {
+		return
+	}
+
+	// Find the Nth root group in flatItems
+	rootGroupCount := 0
+	for i, item := range h.flatItems {
+		if item.Type == session.ItemTypeGroup && item.Level == 0 {
+			rootGroupCount++
+			if rootGroupCount == n {
+				h.cursor = i
+				h.syncViewport()
+				return
+			}
+		}
+	}
+	// If n exceeds available root groups, do nothing (no-op)
 }
 
 // Init initializes the model
@@ -547,6 +586,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		// Handle overlays first
+		// Help overlay takes priority (any key closes it)
+		if h.helpOverlay.IsVisible() {
+			h.helpOverlay, _ = h.helpOverlay.Update(msg)
+			return h, nil
+		}
 		if h.search.IsVisible() {
 			return h.handleSearchKey(msg)
 		}
@@ -803,6 +847,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.search.Show()
 		return h, nil
 
+	case "?":
+		h.helpOverlay.SetSize(h.width, h.height)
+		h.helpOverlay.Show()
+		return h, nil
+
 	case "n":
 		// Collect unique project paths from existing sessions
 		pathSet := make(map[string]bool)
@@ -851,6 +900,27 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		return h, h.loadSessions
+
+	case "u":
+		// Mark session as unread (change idle → waiting)
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				tmuxSess := item.Session.GetTmuxSession()
+				if tmuxSess != nil {
+					tmuxSess.ResetAcknowledged()
+					_ = item.Session.UpdateStatus()
+					h.saveInstances()
+				}
+			}
+		}
+		return h, nil
+
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		// Quick jump to Nth root group (1-indexed)
+		targetNum := int(msg.String()[0] - '0') // Convert "1" -> 1, "2" -> 2, etc.
+		h.jumpToRootGroup(targetNum)
+		return h, nil
 	}
 
 	return h, nil
@@ -1123,6 +1193,9 @@ func (h *Home) View() string {
 	}
 
 	// Overlays take full screen
+	if h.helpOverlay.IsVisible() {
+		return h.helpOverlay.View()
+	}
 	if h.search.IsVisible() {
 		return h.search.View()
 	}
@@ -1150,7 +1223,16 @@ func (h *Home) View() string {
 		Foreground(ColorAccent).
 		Background(ColorSurface).
 		Padding(0, 1)
-	title := titleStyle.Render("Agent Deck")
+
+	// Show profile in title if not default
+	titleText := "Agent Deck"
+	if h.profile != "" && h.profile != session.DefaultProfile {
+		profileStyle := lipgloss.NewStyle().
+			Foreground(ColorCyan).
+			Background(ColorSurface)
+		titleText = "Agent Deck " + profileStyle.Render("["+h.profile+"]")
+	}
+	title := titleStyle.Render(titleText)
 
 	// Stats
 	stats := lipgloss.NewStyle().Foreground(ColorTextDim).Render(
@@ -1320,11 +1402,15 @@ func (h *Home) renderSessionList(height int) string {
 		running, waiting, idle := h.countSessionStatuses()
 		largeLogo := RenderLogoLarge(running, waiting, idle)
 
-		// App title
+		// App title with profile
 		titleStyle := lipgloss.NewStyle().
 			Bold(true).
 			Foreground(ColorAccent)
 		appTitle := titleStyle.Render("Agent Deck")
+		if h.profile != "" && h.profile != session.DefaultProfile {
+			profileStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+			appTitle += " " + profileStyle.Render("["+h.profile+"]")
+		}
 
 		// Subtitle
 		subtitleStyle := lipgloss.NewStyle().
@@ -1372,7 +1458,7 @@ func (h *Home) renderSessionList(height int) string {
 
 	for i := h.viewOffset; i < len(h.flatItems) && visibleCount < maxVisible; i++ {
 		item := h.flatItems[i]
-		h.renderItem(&b, item, i == h.cursor)
+		h.renderItem(&b, item, i == h.cursor, i)
 		visibleCount++
 	}
 
@@ -1386,16 +1472,16 @@ func (h *Home) renderSessionList(height int) string {
 }
 
 // renderItem renders a single item (group or session) for the left panel
-func (h *Home) renderItem(b *strings.Builder, item session.Item, selected bool) {
+func (h *Home) renderItem(b *strings.Builder, item session.Item, selected bool, itemIndex int) {
 	if item.Type == session.ItemTypeGroup {
-		h.renderGroupItem(b, item, selected)
+		h.renderGroupItem(b, item, selected, itemIndex)
 	} else {
 		h.renderSessionItem(b, item, selected)
 	}
 }
 
 // renderGroupItem renders a group header
-func (h *Home) renderGroupItem(b *strings.Builder, item session.Item, selected bool) {
+func (h *Home) renderGroupItem(b *strings.Builder, item session.Item, selected bool, itemIndex int) {
 	group := item.Group
 
 	// Calculate indentation based on nesting level
@@ -1434,6 +1520,23 @@ func (h *Home) renderGroupItem(b *strings.Builder, item session.Item, selected b
 		}
 	}
 
+	// Hotkey prefix for root groups (Level 0, positions 1-9)
+	hotkeyPrefix := ""
+	if item.Level == 0 {
+		// Count how many root groups come before this one
+		rootGroupNum := 0
+		for i := 0; i <= itemIndex && i < len(h.flatItems); i++ {
+			if h.flatItems[i].Type == session.ItemTypeGroup && h.flatItems[i].Level == 0 {
+				rootGroupNum++
+			}
+		}
+		// Only show hotkey for positions 1-9
+		if rootGroupNum >= 1 && rootGroupNum <= 9 {
+			hotkeyStyle := countStyle // Use same dim style as count
+			hotkeyPrefix = hotkeyStyle.Render(fmt.Sprintf("[%d] ", rootGroupNum))
+		}
+	}
+
 	sessionCount := len(group.Sessions)
 	countStr := countStyle.Render(fmt.Sprintf(" (%d)", sessionCount))
 
@@ -1459,7 +1562,7 @@ func (h *Home) renderGroupItem(b *strings.Builder, item session.Item, selected b
 	}
 
 	// Build the row with proper indentation
-	row := fmt.Sprintf("%s%s %s%s%s", indent, expandIcon, nameStyle.Render(group.Name), countStr, statusStr)
+	row := fmt.Sprintf("%s%s%s %s%s%s", indent, hotkeyPrefix, expandIcon, nameStyle.Render(group.Name), countStr, statusStr)
 	b.WriteString(row)
 	b.WriteString("\n")
 }

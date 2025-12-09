@@ -333,6 +333,8 @@ func ReconnectSession(tmuxName, displayName, workDir, command string) *Session {
 		if err := sess.EnablePipePane(); err != nil {
 			debugLog("Warning: failed to enable pipe-pane for %s: %v", tmuxName, err)
 		}
+		// Configure status bar for existing sessions
+		sess.ConfigureStatusBar()
 	}
 
 	return sess
@@ -464,6 +466,10 @@ func (s *Session) Start(command string) error {
 	// 10ms is a good balance between responsiveness and SSH reliability
 	_ = exec.Command("tmux", "set-option", "-t", s.Name, "escape-time", "10").Run()
 
+	// Configure status bar with session info for easy identification
+	// Shows: session title on left, project folder on right
+	s.ConfigureStatusBar()
+
 	// Send the command to the session
 	if command != "" {
 		if err := s.SendKeys(command); err != nil {
@@ -487,6 +493,33 @@ func (s *Session) Start(command string) error {
 func (s *Session) Exists() bool {
 	cmd := exec.Command("tmux", "has-session", "-t", s.Name)
 	return cmd.Run() == nil
+}
+
+// ConfigureStatusBar sets up the tmux status bar with session info
+// Shows: session title on left, project folder on right
+// Uses a compact, informative layout that helps developers know where they are
+func (s *Session) ConfigureStatusBar() {
+	// Get short folder name from WorkDir
+	folderName := filepath.Base(s.WorkDir)
+	if folderName == "" || folderName == "." {
+		folderName = "~"
+	}
+
+	// Enable status bar
+	_ = exec.Command("tmux", "set-option", "-t", s.Name, "status", "on").Run()
+
+	// Style: dark background with accent colors (Tokyo Night inspired)
+	_ = exec.Command("tmux", "set-option", "-t", s.Name, "status-style", "bg=#1a1b26,fg=#a9b1d6").Run()
+
+	// Left side: session title with icon
+	leftStatus := fmt.Sprintf(" 📁 %s ", s.DisplayName)
+	_ = exec.Command("tmux", "set-option", "-t", s.Name, "status-left", leftStatus).Run()
+	_ = exec.Command("tmux", "set-option", "-t", s.Name, "status-left-length", "40").Run()
+
+	// Right side: project folder path
+	rightStatus := fmt.Sprintf(" %s ", folderName)
+	_ = exec.Command("tmux", "set-option", "-t", s.Name, "status-right", rightStatus).Run()
+	_ = exec.Command("tmux", "set-option", "-t", s.Name, "status-right-length", "30").Run()
 }
 
 // EnablePipePane enables tmux pipe-pane to stream output to a log file

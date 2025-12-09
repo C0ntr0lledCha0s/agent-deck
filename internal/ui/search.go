@@ -182,8 +182,22 @@ func (s *Search) View() string {
 		Foreground(lipgloss.Color("241")).
 		Render("  " + formatCount(len(s.results)))
 
+	// Show filter hint when search is empty
+	hintStr := ""
+	if s.input.Value() == "" {
+		hintStr = lipgloss.NewStyle().
+			Foreground(ColorComment).
+			Italic(true).
+			Render("  Tip: waiting / running / idle to filter by status")
+	}
+
 	// Combine everything
-	content := searchBox + "\n\n" + resultsStr.String() + "\n" + countStr
+	var content string
+	if hintStr != "" {
+		content = searchBox + "\n" + hintStr + "\n\n" + resultsStr.String() + "\n" + countStr
+	} else {
+		content = searchBox + "\n\n" + resultsStr.String() + "\n" + countStr
+	}
 
 	// Wrap in overlay box
 	overlay := overlayStyle.Width(60).Render(content)

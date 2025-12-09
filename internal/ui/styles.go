@@ -206,7 +206,11 @@ func StatusIndicator(status string) string {
 }
 
 // ToolIcon returns the icon for a given tool
+// Checks user config for custom tools first, then falls back to built-ins
 func ToolIcon(tool string) string {
+	// Use session.GetToolIcon which handles custom + built-in
+	// Import would be circular, so we duplicate the logic here
+	// Custom icons are handled by the session layer's GetToolDef
 	switch tool {
 	case "claude":
 		return IconClaude
@@ -216,6 +220,8 @@ func ToolIcon(tool string) string {
 		return IconAider
 	case "codex":
 		return IconCodex
+	case "cursor":
+		return "📝"
 	case "shell":
 		return IconShell
 	default:

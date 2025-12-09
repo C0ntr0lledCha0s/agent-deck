@@ -15,7 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const Version = "0.1.0"
+const Version = "0.3.0"
 
 // Table column widths for list command output
 const (
@@ -26,9 +26,12 @@ const (
 )
 
 func main() {
+	// Extract global -p/--profile flag before subcommand dispatch
+	profile, args := extractProfileFlag(os.Args[1:])
+
 	// Handle subcommands
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	if len(args) > 0 {
+		switch args[0] {
 		case "version", "--version", "-v":
 			fmt.Printf("Agent Deck v%s\n", Version)
 			return
@@ -36,13 +39,19 @@ func main() {
 			printHelp()
 			return
 		case "add":
-			handleAdd(os.Args[2:])
+			handleAdd(profile, args[1:])
 			return
 		case "list", "ls":
-			handleList(os.Args[2:])
+			handleList(profile, args[1:])
 			return
 		case "remove", "rm":
-			handleRemove(os.Args[2:])
+			handleRemove(profile, args[1:])
+			return
+		case "status":
+			handleStatus(profile, args[1:])
+			return
+		case "profile":
+			handleProfile(args[1:])
 			return
 		}
 	}
@@ -55,8 +64,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Start TUI with the specified profile
 	p := tea.NewProgram(
-		ui.NewHome(),
+		ui.NewHomeWithProfile(profile),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
@@ -67,8 +77,41 @@ func main() {
 	}
 }
 
+// extractProfileFlag extracts -p or --profile from args, returning the profile and remaining args
+func extractProfileFlag(args []string) (string, []string) {
+	var profile string
+	var remaining []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		// Check for -p=value or --profile=value
+		if strings.HasPrefix(arg, "-p=") {
+			profile = strings.TrimPrefix(arg, "-p=")
+			continue
+		}
+		if strings.HasPrefix(arg, "--profile=") {
+			profile = strings.TrimPrefix(arg, "--profile=")
+			continue
+		}
+
+		// Check for -p value or --profile value
+		if arg == "-p" || arg == "--profile" {
+			if i+1 < len(args) {
+				profile = args[i+1]
+				i++ // Skip the value
+				continue
+			}
+		}
+
+		remaining = append(remaining, arg)
+	}
+
+	return profile, remaining
+}
+
 // handleAdd adds a new session from CLI
-func handleAdd(args []string) {
+func handleAdd(profile string, args []string) {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
 	title := fs.String("title", "", "Session title (defaults to folder name)")
 	titleShort := fs.String("t", "", "Session title (short)")
@@ -93,6 +136,7 @@ func handleAdd(args []string) {
 		fmt.Println("  agent-deck add /path/to/project")
 		fmt.Println("  agent-deck add -t \"My Project\" -g \"work\" .")
 		fmt.Println("  agent-deck add -c claude .")
+		fmt.Println("  agent-deck -p work add .             # Add to 'work' profile")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -145,8 +189,8 @@ func handleAdd(args []string) {
 		sessionTitle = filepath.Base(path)
 	}
 
-	// Load existing sessions
-	storage, err := session.NewStorage()
+	// Load existing sessions with profile
+	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		fmt.Printf("Error: failed to initialize storage: %v\n", err)
 		os.Exit(1)
@@ -197,18 +241,20 @@ func handleAdd(args []string) {
 	}
 
 	fmt.Printf("✓ Added session: %s\n", sessionTitle)
-	fmt.Printf("  Path:  %s\n", path)
-	fmt.Printf("  Group: %s\n", newInstance.GroupPath)
-	fmt.Printf("  ID:    %s\n", newInstance.ID)
+	fmt.Printf("  Profile: %s\n", storage.Profile())
+	fmt.Printf("  Path:    %s\n", path)
+	fmt.Printf("  Group:   %s\n", newInstance.GroupPath)
+	fmt.Printf("  ID:      %s\n", newInstance.ID)
 	if sessionCommand != "" {
-		fmt.Printf("  Cmd:   %s\n", sessionCommand)
+		fmt.Printf("  Cmd:     %s\n", sessionCommand)
 	}
 }
 
 // handleList lists all sessions
-func handleList(args []string) {
+func handleList(profile string, args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck list [options]")
@@ -217,13 +263,23 @@ func handleList(args []string) {
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck list                    # List from default profile")
+		fmt.Println("  agent-deck -p work list            # List from 'work' profile")
+		fmt.Println("  agent-deck list --all              # List from all profiles")
 	}
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
 
-	storage, err := session.NewStorage()
+	if *allProfiles {
+		handleListAllProfiles(*jsonOutput)
+		return
+	}
+
+	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		fmt.Printf("Error: failed to initialize storage: %v\n", err)
 		os.Exit(1)
@@ -236,7 +292,7 @@ func handleList(args []string) {
 	}
 
 	if len(instances) == 0 {
-		fmt.Println("No sessions found.")
+		fmt.Printf("No sessions found in profile '%s'.\n", storage.Profile())
 		return
 	}
 
@@ -249,6 +305,7 @@ func handleList(args []string) {
 			Group     string    `json:"group"`
 			Tool      string    `json:"tool"`
 			Command   string    `json:"command,omitempty"`
+			Profile   string    `json:"profile"`
 			CreatedAt time.Time `json:"created_at"`
 		}
 		sessions := make([]sessionJSON, len(instances))
@@ -260,6 +317,7 @@ func handleList(args []string) {
 				Group:     inst.GroupPath,
 				Tool:      inst.Tool,
 				Command:   inst.Command,
+				Profile:   storage.Profile(),
 				CreatedAt: inst.CreatedAt,
 			}
 		}
@@ -273,6 +331,7 @@ func handleList(args []string) {
 	}
 
 	// Table output
+	fmt.Printf("Profile: %s\n\n", storage.Profile())
 	fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", "ID")
 	fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
 	for _, inst := range instances {
@@ -289,8 +348,104 @@ func handleList(args []string) {
 	fmt.Printf("\nTotal: %d sessions\n", len(instances))
 }
 
+// handleListAllProfiles lists sessions from all profiles
+func handleListAllProfiles(jsonOutput bool) {
+	profiles, err := session.ListProfiles()
+	if err != nil {
+		fmt.Printf("Error: failed to list profiles: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(profiles) == 0 {
+		fmt.Println("No profiles found.")
+		return
+	}
+
+	if jsonOutput {
+		type sessionJSON struct {
+			ID        string    `json:"id"`
+			Title     string    `json:"title"`
+			Path      string    `json:"path"`
+			Group     string    `json:"group"`
+			Tool      string    `json:"tool"`
+			Command   string    `json:"command,omitempty"`
+			Profile   string    `json:"profile"`
+			CreatedAt time.Time `json:"created_at"`
+		}
+		var allSessions []sessionJSON
+
+		for _, profileName := range profiles {
+			storage, err := session.NewStorageWithProfile(profileName)
+			if err != nil {
+				continue
+			}
+			instances, _, err := storage.LoadWithGroups()
+			if err != nil {
+				continue
+			}
+			for _, inst := range instances {
+				allSessions = append(allSessions, sessionJSON{
+					ID:        inst.ID,
+					Title:     inst.Title,
+					Path:      inst.ProjectPath,
+					Group:     inst.GroupPath,
+					Tool:      inst.Tool,
+					Command:   inst.Command,
+					Profile:   profileName,
+					CreatedAt: inst.CreatedAt,
+				})
+			}
+		}
+
+		output, err := json.MarshalIndent(allSessions, "", "  ")
+		if err != nil {
+			fmt.Printf("Error: failed to format JSON output: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(output))
+		return
+	}
+
+	// Table output grouped by profile
+	totalSessions := 0
+	for _, profileName := range profiles {
+		storage, err := session.NewStorageWithProfile(profileName)
+		if err != nil {
+			continue
+		}
+		instances, _, err := storage.LoadWithGroups()
+		if err != nil {
+			continue
+		}
+
+		if len(instances) == 0 {
+			continue
+		}
+
+		fmt.Printf("\n═══ Profile: %s ═══\n\n", profileName)
+		fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, "TITLE", tableColGroup, "GROUP", tableColPath, "PATH", "ID")
+		fmt.Println(strings.Repeat("-", tableColTitle+tableColGroup+tableColPath+tableColIDDisplay+5))
+
+		for _, inst := range instances {
+			title := truncate(inst.Title, tableColTitle)
+			group := truncate(inst.GroupPath, tableColGroup)
+			path := truncate(inst.ProjectPath, tableColPath)
+			idDisplay := inst.ID
+			if len(idDisplay) > tableColIDDisplay {
+				idDisplay = idDisplay[:tableColIDDisplay]
+			}
+			fmt.Printf("%-*s %-*s %-*s %s\n", tableColTitle, title, tableColGroup, group, tableColPath, path, idDisplay)
+		}
+		fmt.Printf("(%d sessions)\n", len(instances))
+		totalSessions += len(instances)
+	}
+
+	fmt.Printf("\n═══════════════════════════════════════\n")
+	fmt.Printf("Total: %d sessions across %d profiles\n", totalSessions, len(profiles))
+}
+
 // handleRemove removes a session by ID or title
-func handleRemove(args []string) {
+func handleRemove(profile string, args []string) {
 	fs := flag.NewFlagSet("remove", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck remove <id|title>")
@@ -300,6 +455,7 @@ func handleRemove(args []string) {
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck remove abc12345")
 		fmt.Println("  agent-deck remove \"My Project\"")
+		fmt.Println("  agent-deck -p work remove abc12345   # Remove from 'work' profile")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -313,7 +469,7 @@ func handleRemove(args []string) {
 		os.Exit(1)
 	}
 
-	storage, err := session.NewStorage()
+	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		fmt.Printf("Error: failed to initialize storage: %v\n", err)
 		os.Exit(1)
@@ -346,7 +502,7 @@ func handleRemove(args []string) {
 	}
 
 	if !found {
-		fmt.Printf("Error: session not found: %s\n", identifier)
+		fmt.Printf("Error: session not found in profile '%s': %s\n", storage.Profile(), identifier)
 		os.Exit(1)
 	}
 
@@ -358,31 +514,301 @@ func handleRemove(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("✓ Removed session: %s\n", removedTitle)
+	fmt.Printf("✓ Removed session: %s (from profile '%s')\n", removedTitle, storage.Profile())
+}
+
+// statusCounts holds session counts by status
+type statusCounts struct {
+	running int
+	waiting int
+	idle    int
+	err     int
+	total   int
+}
+
+// countByStatus counts sessions by their status
+func countByStatus(instances []*session.Instance) statusCounts {
+	var counts statusCounts
+	for _, inst := range instances {
+		inst.UpdateStatus() // Refresh status from tmux
+		switch inst.Status {
+		case session.StatusRunning:
+			counts.running++
+		case session.StatusWaiting:
+			counts.waiting++
+		case session.StatusIdle:
+			counts.idle++
+		case session.StatusError:
+			counts.err++
+		}
+		counts.total++
+	}
+	return counts
+}
+
+// handleStatus shows session status summary
+func handleStatus(profile string, args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	verbose := fs.Bool("verbose", false, "Show detailed session list")
+	verboseShort := fs.Bool("v", false, "Show detailed session list (short)")
+	quiet := fs.Bool("quiet", false, "Only output waiting count (for scripts)")
+	quietShort := fs.Bool("q", false, "Only output waiting count (short)")
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck status [options]")
+		fmt.Println()
+		fmt.Println("Show a summary of session statuses.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck status              # Quick summary")
+		fmt.Println("  agent-deck status -v           # Detailed list")
+		fmt.Println("  agent-deck status -q           # Just waiting count")
+		fmt.Println("  agent-deck -p work status      # Status for 'work' profile")
+	}
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	// Load sessions
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		fmt.Printf("Error: failed to initialize storage: %v\n", err)
+		os.Exit(1)
+	}
+
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		fmt.Printf("Error: failed to load sessions: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(instances) == 0 {
+		if *jsonOutput {
+			fmt.Println(`{"waiting": 0, "running": 0, "idle": 0, "error": 0, "total": 0}`)
+		} else if *quiet || *quietShort {
+			fmt.Println("0")
+		} else {
+			fmt.Printf("No sessions in profile '%s'.\n", storage.Profile())
+		}
+		return
+	}
+
+	// Count by status
+	counts := countByStatus(instances)
+
+	// Output based on flags
+	if *jsonOutput {
+		type statusJSON struct {
+			Waiting int `json:"waiting"`
+			Running int `json:"running"`
+			Idle    int `json:"idle"`
+			Error   int `json:"error"`
+			Total   int `json:"total"`
+		}
+		output, _ := json.Marshal(statusJSON{
+			Waiting: counts.waiting,
+			Running: counts.running,
+			Idle:    counts.idle,
+			Error:   counts.err,
+			Total:   counts.total,
+		})
+		fmt.Println(string(output))
+	} else if *quiet || *quietShort {
+		fmt.Println(counts.waiting)
+	} else if *verbose || *verboseShort {
+		// Detailed output grouped by status
+		printStatusGroup := func(label, symbol string, status session.Status) {
+			var matching []*session.Instance
+			for _, inst := range instances {
+				if inst.Status == status {
+					matching = append(matching, inst)
+				}
+			}
+			if len(matching) == 0 {
+				return
+			}
+			fmt.Printf("%s (%d):\n", label, len(matching))
+			for _, inst := range matching {
+				path := inst.ProjectPath
+				home, _ := os.UserHomeDir()
+				if strings.HasPrefix(path, home) {
+					path = "~" + path[len(home):]
+				}
+				fmt.Printf("  %s %-16s %-10s %s\n", symbol, inst.Title, inst.Tool, path)
+			}
+			fmt.Println()
+		}
+
+		printStatusGroup("WAITING", "◐", session.StatusWaiting)
+		printStatusGroup("RUNNING", "●", session.StatusRunning)
+		printStatusGroup("IDLE", "○", session.StatusIdle)
+		printStatusGroup("ERROR", "✕", session.StatusError)
+
+		fmt.Printf("Total: %d sessions in profile '%s'\n", counts.total, storage.Profile())
+	} else {
+		// Compact output
+		fmt.Printf("%d waiting • %d running • %d idle\n",
+			counts.waiting, counts.running, counts.idle)
+	}
+}
+
+// handleProfile manages profiles (list, create, delete, default)
+func handleProfile(args []string) {
+	if len(args) == 0 {
+		// Default to list
+		handleProfileList()
+		return
+	}
+
+	switch args[0] {
+	case "list", "ls":
+		handleProfileList()
+	case "create", "new":
+		if len(args) < 2 {
+			fmt.Println("Error: profile name is required")
+			fmt.Println("Usage: agent-deck profile create <name>")
+			os.Exit(1)
+		}
+		handleProfileCreate(args[1])
+	case "delete", "rm":
+		if len(args) < 2 {
+			fmt.Println("Error: profile name is required")
+			fmt.Println("Usage: agent-deck profile delete <name>")
+			os.Exit(1)
+		}
+		handleProfileDelete(args[1])
+	case "default":
+		if len(args) < 2 {
+			// Show current default
+			config, err := session.LoadConfig()
+			if err != nil {
+				fmt.Printf("Error: failed to load config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Default profile: %s\n", config.DefaultProfile)
+			return
+		}
+		handleProfileSetDefault(args[1])
+	default:
+		fmt.Printf("Unknown profile command: %s\n", args[0])
+		fmt.Println()
+		fmt.Println("Usage: agent-deck profile <command>")
+		fmt.Println()
+		fmt.Println("Commands:")
+		fmt.Println("  list              List all profiles")
+		fmt.Println("  create <name>     Create a new profile")
+		fmt.Println("  delete <name>     Delete a profile")
+		fmt.Println("  default [name]    Show or set default profile")
+		os.Exit(1)
+	}
+}
+
+func handleProfileList() {
+	profiles, err := session.ListProfiles()
+	if err != nil {
+		fmt.Printf("Error: failed to list profiles: %v\n", err)
+		os.Exit(1)
+	}
+
+	config, _ := session.LoadConfig()
+	defaultProfile := session.DefaultProfile
+	if config != nil {
+		defaultProfile = config.DefaultProfile
+	}
+
+	if len(profiles) == 0 {
+		fmt.Println("No profiles found.")
+		fmt.Println("Run 'agent-deck' to create the default profile automatically.")
+		return
+	}
+
+	fmt.Println("Profiles:")
+	for _, p := range profiles {
+		if p == defaultProfile {
+			fmt.Printf("  * %s (default)\n", p)
+		} else {
+			fmt.Printf("    %s\n", p)
+		}
+	}
+	fmt.Printf("\nTotal: %d profiles\n", len(profiles))
+}
+
+func handleProfileCreate(name string) {
+	if err := session.CreateProfile(name); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✓ Created profile: %s\n", name)
+	fmt.Printf("  Use with: agent-deck -p %s\n", name)
+}
+
+func handleProfileDelete(name string) {
+	// Confirm deletion
+	fmt.Printf("Are you sure you want to delete profile '%s'? This will remove all sessions in this profile. [y/N] ", name)
+	var response string
+	fmt.Scanln(&response)
+	if response != "y" && response != "Y" {
+		fmt.Println("Cancelled.")
+		return
+	}
+
+	if err := session.DeleteProfile(name); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✓ Deleted profile: %s\n", name)
+}
+
+func handleProfileSetDefault(name string) {
+	if err := session.SetDefaultProfile(name); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✓ Default profile set to: %s\n", name)
 }
 
 func printHelp() {
 	fmt.Printf("Agent Deck v%s\n", Version)
 	fmt.Println("Terminal session manager for AI coding agents")
 	fmt.Println()
-	fmt.Println("Usage: agent-deck [command]")
+	fmt.Println("Usage: agent-deck [-p profile] [command]")
+	fmt.Println()
+	fmt.Println("Global Options:")
+	fmt.Println("  -p, --profile <name>   Use specific profile (default: 'default')")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  (none)       Start the TUI")
-	fmt.Println("  add <path>   Add a new session")
-	fmt.Println("  list, ls     List all sessions")
-	fmt.Println("  remove, rm   Remove a session")
-	fmt.Println("  version      Show version")
-	fmt.Println("  help         Show this help")
+	fmt.Println("  (none)           Start the TUI")
+	fmt.Println("  add <path>       Add a new session")
+	fmt.Println("  list, ls         List all sessions")
+	fmt.Println("  remove, rm       Remove a session")
+	fmt.Println("  status           Show session status summary")
+	fmt.Println("  profile          Manage profiles")
+	fmt.Println("  version          Show version")
+	fmt.Println("  help             Show this help")
+	fmt.Println()
+	fmt.Println("Profile Commands:")
+	fmt.Println("  profile list              List all profiles")
+	fmt.Println("  profile create <name>     Create a new profile")
+	fmt.Println("  profile delete <name>     Delete a profile")
+	fmt.Println("  profile default [name]    Show or set default profile")
 	fmt.Println()
 	fmt.Println("Examples:")
+	fmt.Println("  agent-deck                            # Start TUI with default profile")
+	fmt.Println("  agent-deck -p work                    # Start TUI with 'work' profile")
 	fmt.Println("  agent-deck add .                      # Add current directory")
-	fmt.Println("  agent-deck add /path/to/project       # Add specific path")
-	fmt.Println("  agent-deck add -t \"My App\" -g work .  # With title and group")
-	fmt.Println("  agent-deck add -c claude .            # With command")
-	fmt.Println("  agent-deck list                       # List all sessions")
-	fmt.Println("  agent-deck list -json                 # JSON output")
-	fmt.Println("  agent-deck remove my-project          # Remove by title")
+	fmt.Println("  agent-deck -p work add .              # Add to 'work' profile")
+	fmt.Println("  agent-deck add -t \"My App\" -g dev .   # With title and group")
+	fmt.Println("  agent-deck list                       # List sessions")
+	fmt.Println("  agent-deck list --all                 # List sessions from all profiles")
+	fmt.Println("  agent-deck profile create work        # Create 'work' profile")
+	fmt.Println()
+	fmt.Println("Environment Variables:")
+	fmt.Println("  AGENTDECK_PROFILE    Default profile to use")
 	fmt.Println()
 	fmt.Println("Keyboard shortcuts (in TUI):")
 	fmt.Println("  n          New session")
