@@ -18,16 +18,20 @@ type ClaudeConfig struct {
 }
 
 // GetClaudeConfigDir returns the Claude config directory
-// Priority: 1) CLAUDE_CONFIG_DIR env, 2) ~/.claude
-// Note: UserConfig.Claude.ConfigDir will be added in Task 2
+// Priority: 1) CLAUDE_CONFIG_DIR env, 2) UserConfig setting, 3) ~/.claude
 func GetClaudeConfigDir() string {
 	// 1. Check env var (highest priority)
 	if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
 		return expandTilde(envDir)
 	}
 
-	// 2. Default to ~/.claude
-	// TODO: Check UserConfig.Claude.ConfigDir when Task 2 is complete
+	// 2. Check user config
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil && userConfig.Claude.ConfigDir != "" {
+		return expandTilde(userConfig.Claude.ConfigDir)
+	}
+
+	// 3. Default to ~/.claude
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".claude")
 }

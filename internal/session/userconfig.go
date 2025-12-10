@@ -15,6 +15,16 @@ const UserConfigFileName = "config.toml"
 type UserConfig struct {
 	// Tools defines custom AI tool configurations
 	Tools map[string]ToolDef `toml:"tools"`
+
+	// Claude defines Claude Code integration settings
+	Claude ClaudeSettings `toml:"claude"`
+}
+
+// ClaudeSettings defines Claude Code configuration
+type ClaudeSettings struct {
+	// ConfigDir is the path to Claude's config directory
+	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
+	ConfigDir string `toml:"config_dir"`
 }
 
 // ToolDef defines a custom AI tool
@@ -173,6 +183,12 @@ func CreateExampleConfig() error {
 
 	exampleConfig := `# Agent Deck User Configuration
 # This file is loaded on startup. Edit to customize tools.
+
+# Claude Code integration
+# Set this if you use a custom Claude profile (e.g., dual account setup)
+# Default: ~/.claude (or CLAUDE_CONFIG_DIR env var takes priority)
+# [claude]
+# config_dir = "~/.claude-work"
 
 # Custom tool definitions
 # Each tool can have:
