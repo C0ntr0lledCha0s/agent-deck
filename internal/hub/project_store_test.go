@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -199,5 +201,29 @@ func TestProjectStoreGetNotFound(t *testing.T) {
 	_, err := store.Get("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for non-existent project, got nil")
+	}
+}
+
+func TestProjectStoreConcurrentAccess(t *testing.T) {
+	store := newTestProjectStore(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			name := fmt.Sprintf("project-%d", n)
+			_ = store.Save(&Project{Name: name, Path: "/path/" + name})
+			_, _ = store.Get(name)
+			_, _ = store.List()
+		}(i)
+	}
+	wg.Wait()
+
+	projects, err := store.List()
+	if err != nil {
+		t.Fatalf("List after concurrent ops: %v", err)
+	}
+	if len(projects) != 20 {
+		t.Fatalf("expected 20 projects, got %d", len(projects))
 	}
 }
