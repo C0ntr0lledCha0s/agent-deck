@@ -458,6 +458,11 @@
   background: #0e6b63;
 }
 
+.hub-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .hub-btn {
   height: 36px;
   padding: 0 14px;

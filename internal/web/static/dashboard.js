@@ -457,14 +457,24 @@
   function openNewTaskModal() {
     // Populate project selector from loaded projects.
     clearChildren(newTaskProject)
+    var hasProjects = state.projects.length > 0
     for (var i = 0; i < state.projects.length; i++) {
       var opt = document.createElement("option")
       opt.value = state.projects[i].name
       opt.textContent = state.projects[i].name
       newTaskProject.appendChild(opt)
     }
+    if (!hasProjects) {
+      var placeholder = document.createElement("option")
+      placeholder.value = ""
+      placeholder.textContent = "No projects configured"
+      placeholder.disabled = true
+      placeholder.selected = true
+      newTaskProject.appendChild(placeholder)
+    }
     if (newTaskDesc) newTaskDesc.value = ""
     if (newTaskPhase) newTaskPhase.value = "execute"
+    if (newTaskSubmit) newTaskSubmit.disabled = !hasProjects
 
     if (newTaskModal) newTaskModal.classList.add("open")
     if (newTaskBackdrop) newTaskBackdrop.classList.add("open")
