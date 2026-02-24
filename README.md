@@ -222,6 +222,63 @@ Both Telegram and Slack can run simultaneously — the bridge daemon handles bot
 
 **Legacy external watcher scripts**: optional only. `~/.agent-deck/events/` is not required for notification routing.
 
+### Hub (Dashboard & Task API)
+
+The Hub adds a dashboard and REST API for managing tasks across projects with container-backed agent sessions. Designed for multi-project setups where tasks are dispatched to the right workspace automatically.
+
+**Start the hub:**
+```bash
+agent-deck web    # Dashboard available at http://127.0.0.1:8420
+```
+
+**Project registry** (`~/.agent-deck/profiles/default/hub/projects.yaml`):
+```yaml
+projects:
+  - name: api-service
+    path: /home/user/code/api
+    keywords: [api, auth, endpoint]
+    container: sandbox-api
+  - name: frontend
+    path: /home/user/code/web
+    keywords: [frontend, ui, react]
+    container: sandbox-web
+```
+
+**Task lifecycle:**
+1. Create a task: `POST /api/tasks` with project + description
+2. Hub routes to project, launches Claude Code in the project's Docker container
+3. Send follow-up input: `POST /api/tasks/{id}/input`
+4. Stream terminal output: `GET /api/tasks/{id}/preview` (SSE)
+5. Check container health: `GET /api/tasks/{id}/health`
+
+**Keyword routing** — `POST /api/route` matches a message to the best project by keyword overlap:
+```bash
+curl -X POST http://127.0.0.1:8420/api/route \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "fix the auth endpoint"}'
+# → {"project": "api-service", "confidence": 0.66, "matchedKeywords": ["api", "endpoint"]}
+```
+
+**Container integration** — each project can map to a Docker container. When a task is created, the hub:
+- Checks container health via `docker inspect`
+- Creates a tmux session inside the container (`docker exec tmux new-session`)
+- Starts Claude Code with `pipe-pane` for output capture
+- Delivers user input via `tmux send-keys`
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/tasks` | GET | List tasks (filter by `?status=` or `?project=`) |
+| `/api/tasks` | POST | Create task (auto-launches container session) |
+| `/api/tasks/{id}` | GET | Task details |
+| `/api/tasks/{id}` | PATCH | Update task |
+| `/api/tasks/{id}` | DELETE | Delete task |
+| `/api/tasks/{id}/input` | POST | Send input to container tmux session |
+| `/api/tasks/{id}/fork` | POST | Fork a task |
+| `/api/tasks/{id}/health` | GET | Container health check |
+| `/api/tasks/{id}/preview` | GET | SSE terminal output stream |
+| `/api/projects` | GET | List registered projects |
+| `/api/route` | POST | Route message to project by keywords |
+
 ### Multi-Tool Support
 
 Agent Deck works with any terminal-based AI tool:
@@ -350,6 +407,7 @@ See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all short
 | [Configuration](skills/agent-deck/references/config-reference.md) | config.toml, MCP setup, custom tools, socket pool, skills registry paths |
 | [TUI Reference](skills/agent-deck/references/tui-reference.md) | Keyboard shortcuts, status indicators, navigation |
 | [Troubleshooting](skills/agent-deck/references/troubleshooting.md) | Common issues, debugging, recovery, uninstalling |
+| [Hub Design](docs/plans/2026-02-24-hub-dashboard-design.md) | Hub architecture, data model, and API design |
 
 Additional resources:
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute

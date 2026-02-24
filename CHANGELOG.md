@@ -5,6 +5,28 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - Hub Dashboard & Container Integration
+
+### Added
+
+- **Hub Dashboard** — new mobile-first dashboard mode for `agent-deck web` with task cards, status badges, and project routing
+  - `GET /api/tasks` — list tasks with optional `?status=` and `?project=` filters
+  - `POST /api/tasks` — create tasks with automatic project routing and container session launch
+  - `GET /api/tasks/{id}` — task details with session and container metadata
+  - `PATCH /api/tasks/{id}` — update task description, phase, status, or branch
+  - `DELETE /api/tasks/{id}` — delete a task
+  - `POST /api/tasks/{id}/input` — send input to a running container tmux session
+  - `POST /api/tasks/{id}/fork` — fork a task, inheriting project and phase
+  - `GET /api/tasks/{id}/health` — check container health for a task's project
+  - `GET /api/tasks/{id}/preview` — SSE stream of terminal output from container pipe-pane logs
+  - `GET /api/projects` — list registered projects from `projects.yaml`
+  - `POST /api/route` — route a natural-language message to the best-matching project by keyword confidence
+- **Project Registry** — YAML-based project configuration (`projects.yaml`) with name, path, keywords, container, and default MCPs
+- **Keyword Router** — exact-match keyword routing with confidence scoring and tie-breaking by keyword density
+- **ContainerExecutor** — interface-based Docker executor (`docker inspect`, `docker exec`) with mock support for testing
+- **SessionLauncher** — creates tmux sessions inside Docker containers, starts Claude Code with `--dangerously-skip-permissions`, configures `pipe-pane` for output streaming, and sends input via `send-keys -l`
+- **TaskStore** — filesystem JSON-based CRUD for task records with sequential ID generation (`t-001`, `t-002`, ...) and thread-safe access
+
 ## [0.19.13] - 2026-02-24
 
 ### Added

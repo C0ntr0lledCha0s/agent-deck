@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b0d11" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Agent Deck" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/static/icons/logo.svg" sizes="120x80" />
+    <link rel="apple-touch-icon" href="/static/icons/logo.svg" />
+    <title>Agent Deck Hub</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/dashboard.css" />
+  </head>
+  <body>
+    <div class="app">
+      <!-- Sidebar -->
+      <nav class="sidebar" id="sidebar">
+        <div class="sidebar-top">
+          <button class="sidebar-icon sidebar-icon--active" data-view="agents" title="Agents" aria-label="Agents view">
+            &#9632;
+          </button>
+          <button class="sidebar-icon" data-view="tasks" title="Tasks" aria-label="Tasks view">
+            &#9776;
+          </button>
+          <button class="sidebar-icon" data-view="timeline" title="Timeline" aria-label="Timeline view">
+            &#8987;
+          </button>
+          <button class="sidebar-icon" data-view="settings" title="Settings" aria-label="Settings view">
+            &#9881;
+          </button>
+          <button class="sidebar-icon" id="new-task-btn" title="New Task" aria-label="Create new task">
+            &#43;
+          </button>
+        </div>
+        <div class="sidebar-bottom">
+          <div class="sidebar-status" id="sidebar-status" title="Connection status">
+            <span class="sidebar-status-dot" id="sidebar-status-dot"></span>
+            <span class="sidebar-agent-count" id="sidebar-agent-count">0</span>
+          </div>
+        </div>
+      </nav>
+
+      <!-- Main content area -->
+      <div class="main-content">
+        <!-- Two-panel container -->
+        <div class="panels" id="panels">
+          <!-- Left panel: filter + task list -->
+          <div class="panel-left">
+            <div class="filter-bar" id="filter-bar">
+              <button class="filter-pill filter-pill--active" data-project="">All</button>
+            </div>
+            <div class="task-list" id="task-list">
+              <div class="task-list-empty" id="task-list-empty">Loading agents...</div>
+            </div>
+          </div>
+
+          <!-- Right panel: detail / empty state -->
+          <div class="panel-right" id="panel-right">
+            <div class="empty-state" id="empty-state">
+              <div class="empty-state-icon">&#9632;</div>
+              <div class="empty-state-text">Select an agent to preview</div>
+            </div>
+            <!-- Detail content (hidden until task selected) -->
+            <div class="detail-view" id="detail-view" style="display:none">
+              <div class="detail-header" id="detail-header"></div>
+              <div class="session-chain" id="session-chain"></div>
+              <div class="preview-header" id="preview-header"></div>
+              <div class="terminal-container" id="terminal-container"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat bar (pinned to bottom) -->
+        <div class="chat-bar" id="chat-bar">
+          <button class="chat-mode-btn" id="chat-mode-btn" type="button" title="Change chat mode" aria-label="Chat mode">
+            <span class="chat-mode-icon" id="chat-mode-icon">+</span>
+            <span class="chat-mode-label" id="chat-mode-label">auto-route</span>
+          </button>
+          <input
+            type="text"
+            class="chat-input"
+            id="chat-input"
+            placeholder="Describe a new task..."
+            aria-label="Chat input"
+          />
+          <button class="chat-send-btn" id="chat-send-btn" type="button" aria-label="Send">
+            &#10148;
+          </button>
+        </div>
+      </div>
+
+      <!-- New Task modal -->
+      <div class="modal-backdrop" id="new-task-backdrop"></div>
+      <div class="modal" id="new-task-modal" role="dialog" aria-label="Create new task" aria-hidden="true">
+        <div class="modal-header">
+          <span class="modal-title">New Task</span>
+          <button class="modal-close" id="new-task-close" type="button" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <label class="modal-label" for="new-task-project">Project</label>
+          <select id="new-task-project" class="hub-select modal-field"></select>
+          <label class="modal-label" for="new-task-desc">Description</label>
+          <textarea id="new-task-desc" class="modal-textarea" rows="3" placeholder="What should the agent do?"></textarea>
+          <div class="route-suggestion" id="route-suggestion"></div>
+          <label class="modal-label" for="new-task-phase">Phase</label>
+          <select id="new-task-phase" class="hub-select modal-field">
+            <option value="execute">Execute</option>
+            <option value="brainstorm">Brainstorm</option>
+            <option value="plan">Plan</option>
+            <option value="review">Review</option>
+          </select>
+        </div>
+        <div class="modal-footer">
+          <button id="new-task-cancel" class="hub-btn" type="button">Cancel</button>
+          <button id="new-task-submit" class="hub-btn-primary" type="button">Create</button>
+        </div>
+      </div>
+
+      <!-- Mobile bottom nav (hidden on desktop) -->
+      <nav class="mobile-nav" id="mobile-nav">
+        <a href="#" class="mobile-nav-item mobile-nav-item--active" data-view="agents">
+          <span class="mobile-nav-icon">&#9632;</span>
+          <span class="mobile-nav-label">Agents</span>
+        </a>
+        <a href="#" class="mobile-nav-item" data-view="tasks">
+          <span class="mobile-nav-icon">&#9776;</span>
+          <span class="mobile-nav-label">Tasks</span>
+        </a>
+        <a href="/terminal" class="mobile-nav-item">
+          <span class="mobile-nav-icon">&#9654;</span>
+          <span class="mobile-nav-label">Terminal</span>
+        </a>
+      </nav>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script src="/static/dashboard.js"></script>
+  </body>
+</html>
