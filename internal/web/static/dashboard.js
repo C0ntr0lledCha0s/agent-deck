@@ -22,6 +22,7 @@
   var newTaskProject = document.getElementById("new-task-project")
   var newTaskDesc = document.getElementById("new-task-desc")
   var newTaskPhase = document.getElementById("new-task-phase")
+  var routeSuggestion = document.getElementById("route-suggestion")
 
   // ── State ───────────────────────────────────────────────────────
   var state = {
@@ -475,6 +476,7 @@
     if (newTaskDesc) newTaskDesc.value = ""
     if (newTaskPhase) newTaskPhase.value = "execute"
     if (newTaskSubmit) newTaskSubmit.disabled = !hasProjects
+    if (routeSuggestion) routeSuggestion.textContent = ""
 
     if (newTaskModal) newTaskModal.classList.add("open")
     if (newTaskBackdrop) newTaskBackdrop.classList.add("open")
@@ -483,6 +485,7 @@
   }
 
   function closeNewTaskModal() {
+    if (routeTimer) { clearTimeout(routeTimer); routeTimer = null }
     if (newTaskModal) newTaskModal.classList.remove("open")
     if (newTaskBackdrop) newTaskBackdrop.classList.remove("open")
     if (newTaskModal) newTaskModal.setAttribute("aria-hidden", "true")
@@ -516,6 +519,60 @@
       .catch(function (err) {
         console.error("submitNewTask:", err)
       })
+  }
+
+  // ── Auto-suggest project via routing ─────────────────────────────
+  var routeTimer = null
+
+  function suggestProject(message) {
+    if (routeTimer) clearTimeout(routeTimer)
+    if (!message || message.length < 5) {
+      if (routeSuggestion) routeSuggestion.textContent = ""
+      return
+    }
+
+    routeTimer = setTimeout(function () {
+      routeTimer = null
+      var headers = authHeaders()
+      headers["Content-Type"] = "application/json"
+
+      fetch(apiPathWithToken("/api/route"), {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify({ message: message }),
+      })
+        .then(function (r) {
+          if (!r.ok) return null
+          return r.json()
+        })
+        .then(function (data) {
+          if (!data || !data.project) {
+            if (routeSuggestion) {
+              routeSuggestion.textContent = "No matching project"
+              routeSuggestion.className = "route-suggestion route-suggestion-muted"
+            }
+            return
+          }
+          if (routeSuggestion) {
+            routeSuggestion.textContent =
+              "Suggested: " + data.project +
+              " (" + Math.round(data.confidence * 100) + "% match)"
+            routeSuggestion.className = "route-suggestion"
+          }
+          // Auto-select the suggested project in the dropdown.
+          if (newTaskProject) {
+            for (var i = 0; i < newTaskProject.options.length; i++) {
+              if (newTaskProject.options[i].value === data.project) {
+                newTaskProject.selectedIndex = i
+                break
+              }
+            }
+          }
+        })
+        .catch(function () {
+          if (routeSuggestion) routeSuggestion.textContent = ""
+        })
+    }, 300)
   }
 
   // ── Event listeners ─────────────────────────────────────────────
@@ -557,6 +614,11 @@
   }
   if (newTaskSubmit) {
     newTaskSubmit.addEventListener("click", submitNewTask)
+  }
+  if (newTaskDesc) {
+    newTaskDesc.addEventListener("input", function () {
+      suggestProject(newTaskDesc.value.trim())
+    })
   }
 
   document.addEventListener("keydown", function (e) {
