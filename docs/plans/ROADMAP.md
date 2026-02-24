@@ -54,7 +54,7 @@ Phase 0   (Foundation)        → Secure containerised dev environment          
 Phase 0.5 (Coder Migration)   → Replace shell scripts with Coder + OpenTofu   🔧 In Progress
 Phase 0.6 (Critical Fixes)    → Address security/architecture blockers         🚨 BLOCKING
 Phase 1   (Agent Management)   → Agent Deck sessions, conductor, Telegram      📋 Planned
-Phase 2   (Hub Web Layer)      → Mobile-first web UI for dispatch & monitoring  📋 Designed
+Phase 2   (Hub Web Layer)      → Mobile-first web UI for dispatch & monitoring  🔧 In Progress (API + containers done)
 Phase 3   (Git Automation)     → Branch management, diffs, approve/reject       📋 Designed
 Phase 4   (External Triggers)  → Webhooks, GitHub integration, messaging bots   📋 Planned
 Phase 5   (Orchestration)      → Cross-project tasks, pipelines, scheduling     📋 Future
@@ -526,9 +526,22 @@ Implementation requirements for future migration:
 
 ---
 
-## Phase 2 — Hub Web Layer 📋
+## Phase 2 — Hub Web Layer 🔧
 
 Mobile-first web UI wrapping Agent Deck operations. Thin orchestration layer — Agent Deck does session management, Hub adds multi-project routing, web monitoring, and diff review.
+
+**Status:** Core API and container integration **implemented** (Feb 2026). Task CRUD, project routing, container session launch, input delivery, SSE terminal streaming, and health checks are working. Frontend dashboard views and Kanban board are not yet built.
+
+**Implemented (Hub sub-phases 1-4):**
+- `internal/hub/` — Task model, TaskStore (filesystem JSON CRUD), ProjectRegistry (YAML), keyword Router, ContainerExecutor (Docker), SessionLauncher (tmux in containers)
+- `internal/web/handlers_hub.go` — REST API: tasks CRUD, input, fork, health, preview SSE, projects, route
+- See [Hub Dashboard Design](2026-02-24-hub-dashboard-design.md), [Phase 2](2026-02-24-hub-phase2-task-creation.md), [Phase 3](2026-02-24-hub-phase3-project-routing.md), [Phase 4](2026-02-24-hub-phase4-container-integration.md)
+
+**Remaining:**
+- Frontend dashboard UI (htmx + SSE task cards)
+- Kanban view, Conductor view, Workspaces view
+- Brainstorm/backlog view
+- Diff viewer with approve/reject
 
 **Prerequisite:** Phase 1 (Agent Deck + conductor running)
 
