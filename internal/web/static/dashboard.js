@@ -910,6 +910,29 @@
     })
   }
 
+  // Mobile bottom nav
+  var mobileNavItems = document.querySelectorAll(".mobile-nav-item[data-view]")
+  for (var mi = 0; mi < mobileNavItems.length; mi++) {
+    mobileNavItems[mi].addEventListener("click", function (e) {
+      e.preventDefault()
+      var view = e.currentTarget.dataset.view
+      if (!view) return
+      state.activeView = view
+
+      // Update active state on mobile nav
+      var items = document.querySelectorAll(".mobile-nav-item[data-view]")
+      for (var n = 0; n < items.length; n++) {
+        if (items[n].dataset.view === view) {
+          items[n].classList.add("mobile-nav-item--active")
+        } else {
+          items[n].classList.remove("mobile-nav-item--active")
+        }
+      }
+
+      renderSidebar()
+    })
+  }
+
   // Escape key
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") {
