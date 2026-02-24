@@ -423,19 +423,6 @@
 
 .detail-chat-send {
   height: 38px;
-  padding: 0 16px;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  background: var(--accent);
-  color: #fff;
-  font: inherit;
-  font-size: 0.88rem;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.detail-chat-send:hover {
-  background: #0e6b63;
 }
 
 /* ── Primary button ────────────────────────────────────────────── */
