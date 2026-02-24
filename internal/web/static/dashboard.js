@@ -13,6 +13,8 @@
     terminal: null,
     terminalWs: null,
     fitAddon: null,
+    chatMode: null,
+    chatModeOverride: null,
   }
 
   // ── Status metadata ─────────────────────────────────────────────
@@ -195,7 +197,9 @@
     var view = btn.dataset.view
     if (!view) return
     state.activeView = view
+    state.chatModeOverride = null
     renderSidebar()
+    renderChatBar()
   }
 
   // ── Filter bar ────────────────────────────────────────────────────
@@ -224,8 +228,10 @@
 
   function handleFilterClick(e) {
     state.projectFilter = e.currentTarget.dataset.project || ""
+    state.chatModeOverride = null
     renderFilterBar()
     renderTaskList()
+    renderChatBar()
   }
 
   // ── Task list ─────────────────────────────────────────────────────
@@ -398,6 +404,7 @@
   // ── Task selection ────────────────────────────────────────────────
   function selectTask(id) {
     state.selectedTaskId = id
+    state.chatModeOverride = null
     var task = findTask(id)
 
     // Update card selection styles
@@ -657,27 +664,49 @@
     renderChatBar()
   }
 
-  // ── Chat bar ──────────────────────────────────────────────────────
-  function renderChatBar() {
-    var input = document.getElementById("chat-input")
-    var modeIcon = document.getElementById("chat-mode-icon")
-    var modeLabel = document.getElementById("chat-mode-label")
+  // ── Chat mode detection ────────────────────────────────────────────
+  function detectChatMode() {
+    if (state.chatModeOverride) return state.chatModeOverride
 
     var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
 
-    if (task && task.agentStatus !== "complete" && task.agentStatus !== "idle") {
-      // Reply mode
-      if (modeIcon) { modeIcon.textContent = "\u21A9"; modeIcon.style.color = "var(--accent)" }
-      if (modeLabel) modeLabel.textContent = task.id + "/" + task.phase
-      if (input) input.placeholder = "Reply to " + task.id + "..."
-    } else {
-      // New task mode
-      var project = ""
-      if (task) project = task.project
-      else if (state.projectFilter) project = state.projectFilter
+    if (state.activeView === "agents" && task && task.agentStatus !== "complete" && task.agentStatus !== "idle") {
+      return {
+        mode: "reply",
+        label: "\u21A9 " + task.id + "/" + task.phase,
+        icon: "\u21A9",
+        color: "var(--accent)",
+      }
+    }
 
-      if (modeIcon) { modeIcon.textContent = "+"; modeIcon.style.color = "var(--blue)" }
-      if (modeLabel) modeLabel.textContent = project ? project : "auto-route"
+    var project = ""
+    if (task) project = task.project
+    else if (state.projectFilter) project = state.projectFilter
+
+    return {
+      mode: "new",
+      label: project ? "+ " + project : "+ auto-route",
+      icon: "+",
+      color: "var(--blue)",
+    }
+  }
+
+  function renderChatBar() {
+    var mode = detectChatMode()
+    state.chatMode = mode
+
+    var modeBtn = document.getElementById("chat-mode-btn")
+    var modeIcon = document.getElementById("chat-mode-icon")
+    var modeLabel = document.getElementById("chat-mode-label")
+    var input = document.getElementById("chat-input")
+
+    if (modeBtn) modeBtn.style.borderColor = mode.color
+    if (modeIcon) { modeIcon.textContent = mode.icon; modeIcon.style.color = mode.color }
+    if (modeLabel) modeLabel.textContent = mode.label
+
+    if (mode.mode === "reply") {
+      if (input) input.placeholder = "Reply to " + state.selectedTaskId + "..."
+    } else {
       if (input) input.placeholder = "Describe a new task..."
     }
   }
@@ -688,10 +717,9 @@
     var text = input.value.trim()
     if (!text) return
 
-    var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
-    var isReply = task && task.agentStatus !== "complete" && task.agentStatus !== "idle"
+    var mode = state.chatMode || detectChatMode()
 
-    if (isReply && state.selectedTaskId) {
+    if (mode.mode === "reply" && state.selectedTaskId) {
       sendTaskInput(state.selectedTaskId, text)
     } else {
       openNewTaskModalWithDescription(text)
