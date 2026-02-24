@@ -240,6 +240,57 @@ func TestNextIDSequence(t *testing.T) {
 	}
 }
 
+func TestSaveAndGetNewFields(t *testing.T) {
+	store := newTestStore(t)
+
+	task := &Task{
+		Project:     "web-app",
+		Description: "Test new fields",
+		Phase:       PhaseExecute,
+		Status:      TaskStatusRunning,
+		AgentStatus: AgentStatusThinking,
+		Skills:      []string{"git", "docker"},
+		MCPs:        []string{"filesystem"},
+		Diff:        &DiffInfo{Files: 3, Add: 42, Del: 7},
+		Container:   "sandbox-web",
+		AskQuestion: "Which auth method?",
+		Sessions: []Session{
+			{ID: "s-1", Phase: PhasePlan, Status: "complete", Duration: "5m", Summary: "Planned approach"},
+			{ID: "s-2", Phase: PhaseExecute, Status: "active", Duration: "12m"},
+		},
+	}
+
+	if err := store.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := store.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.AgentStatus != AgentStatusThinking {
+		t.Fatalf("expected agentStatus thinking, got %s", got.AgentStatus)
+	}
+	if len(got.Skills) != 2 || got.Skills[0] != "git" {
+		t.Fatalf("expected skills [git docker], got %v", got.Skills)
+	}
+	if got.Diff == nil || got.Diff.Files != 3 {
+		t.Fatalf("expected diff with 3 files, got %v", got.Diff)
+	}
+	if got.Container != "sandbox-web" {
+		t.Fatalf("expected container sandbox-web, got %s", got.Container)
+	}
+	if got.AskQuestion != "Which auth method?" {
+		t.Fatalf("expected askQuestion, got %s", got.AskQuestion)
+	}
+	if len(got.Sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(got.Sessions))
+	}
+	if got.Sessions[0].Summary != "Planned approach" {
+		t.Fatalf("expected session summary, got %s", got.Sessions[0].Summary)
+	}
+}
+
 func newTestStore(t *testing.T) *TaskStore {
 	t.Helper()
 	store, err := NewTaskStore(t.TempDir())
