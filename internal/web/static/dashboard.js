@@ -1,53 +1,42 @@
 (function () {
   "use strict"
 
-  // ── DOM references ──────────────────────────────────────────────
-  var metaState = document.getElementById("meta-state")
-  var taskGrid = document.getElementById("task-grid")
-  var taskEmpty = document.getElementById("task-empty")
-  var filterStatus = document.getElementById("filter-status")
-  var filterProject = document.getElementById("filter-project")
-  var detailPanel = document.getElementById("detail-panel")
-  var detailBackdrop = document.getElementById("detail-backdrop")
-  var detailBack = document.getElementById("detail-back")
-  var detailBody = document.getElementById("detail-body")
-  var chatInput = document.getElementById("detail-chat-input")
-  var chatSend = document.getElementById("detail-chat-send")
-  var newTaskBtn = document.getElementById("new-task-btn")
-  var newTaskModal = document.getElementById("new-task-modal")
-  var newTaskBackdrop = document.getElementById("new-task-backdrop")
-  var newTaskClose = document.getElementById("new-task-close")
-  var newTaskCancel = document.getElementById("new-task-cancel")
-  var newTaskSubmit = document.getElementById("new-task-submit")
-  var newTaskProject = document.getElementById("new-task-project")
-  var newTaskDesc = document.getElementById("new-task-desc")
-  var newTaskPhase = document.getElementById("new-task-phase")
-  var routeSuggestion = document.getElementById("route-suggestion")
-
   // ── State ───────────────────────────────────────────────────────
   var state = {
     tasks: [],
     projects: [],
     selectedTaskId: null,
+    activeView: "agents",
+    projectFilter: "",
     authToken: readAuthTokenFromURL(),
     menuEvents: null,
+    terminal: null,
+    terminalWs: null,
+    fitAddon: null,
   }
 
   // ── Status metadata ─────────────────────────────────────────────
-  var STATUS_META = {
-    thinking: { icon: "\u25CF", label: "Thinking" },
-    waiting:  { icon: "\u25D0", label: "Waiting" },
-    running:  { icon: "\u27F3", label: "Running" },
-    idle:     { icon: "\u25CB", label: "Idle" },
-    error:    { icon: "\u2715", label: "Error" },
-    complete: { icon: "\u2713", label: "Complete" },
+  var AGENT_STATUS_META = {
+    thinking: { icon: "\u25CF", label: "Thinking", color: "var(--orange)" },
+    waiting:  { icon: "\u25D0", label: "Input needed", color: "var(--orange)" },
+    running:  { icon: "\u27F3", label: "Running", color: "var(--blue)" },
+    idle:     { icon: "\u25CB", label: "Idle", color: "var(--text-dim)" },
+    error:    { icon: "\u2715", label: "Error", color: "var(--red)" },
+    complete: { icon: "\u2713", label: "Complete", color: "var(--green)" },
+  }
+
+  var TASK_STATUS_COLORS = {
+    backlog:  "var(--text-dim)",
+    planning: "var(--phase-plan)",
+    running:  "var(--phase-execute)",
+    review:   "var(--phase-review)",
+    done:     "var(--phase-done)",
   }
 
   var PHASES = ["brainstorm", "plan", "execute", "review"]
   var PHASE_DOT_LABELS = { brainstorm: "B", plan: "P", execute: "E", review: "R" }
-  var PHASE_LABELS = { brainstorm: "Brainstorm", plan: "Plan", execute: "Execute", review: "Review" }
 
-  // ── Auth ────────────────────────────────────────────────────────
+  // ── Auth ──────────────────────────────────────────────────────────
   function readAuthTokenFromURL() {
     var params = new URLSearchParams(window.location.search || "")
     return String(params.get("token") || "").trim()
@@ -66,7 +55,7 @@
     return h
   }
 
-  // ── Helpers: safe DOM construction ──────────────────────────────
+  // ── Helpers: safe DOM construction ────────────────────────────────
   function el(tag, className, textContent) {
     var node = document.createElement(tag)
     if (className) node.className = className
@@ -78,7 +67,7 @@
     while (parent.firstChild) parent.removeChild(parent.firstChild)
   }
 
-  // ── Data fetching ───────────────────────────────────────────────
+  // ── Data fetching ─────────────────────────────────────────────────
   function fetchTasks() {
     return fetch(apiPathWithToken("/api/tasks"), { headers: authHeaders() })
       .then(function (r) {
@@ -87,17 +76,17 @@
       })
       .then(function (data) {
         state.tasks = data.tasks || []
-        renderTasks()
-        // Re-render open detail if task data changed
+        renderTaskList()
+        updateAgentCount()
         if (state.selectedTaskId) {
           var task = findTask(state.selectedTaskId)
-          if (task) renderDetail(task)
+          if (task) renderRightPanel(task)
         }
       })
       .catch(function (err) {
         console.error("fetchTasks:", err)
         state.tasks = []
-        renderTasks()
+        renderTaskList()
       })
   }
 
@@ -109,7 +98,7 @@
       })
       .then(function (data) {
         state.projects = data.projects || []
-        renderProjectFilter()
+        renderFilterBar()
       })
       .catch(function (err) {
         console.error("fetchProjects:", err)
@@ -123,7 +112,7 @@
     return null
   }
 
-  // ── SSE ─────────────────────────────────────────────────────────
+  // ── SSE ───────────────────────────────────────────────────────────
   function connectSSE() {
     if (state.menuEvents) {
       state.menuEvents.close()
@@ -144,10 +133,11 @@
       try {
         var data = JSON.parse(e.data)
         state.tasks = data.tasks || []
-        renderTasks()
+        renderTaskList()
+        updateAgentCount()
         if (state.selectedTaskId) {
           var task = findTask(state.selectedTaskId)
-          if (task) renderDetail(task)
+          if (task) renderRightPanel(task)
         }
       } catch (err) {
         console.error("tasks SSE parse error:", err)
@@ -169,246 +159,564 @@
   }
 
   function setConnectionState(s) {
-    if (!metaState) return
-    metaState.textContent = s
-    metaState.className = "meta state-" + s
+    var dot = document.getElementById("sidebar-status-dot")
+    if (dot) {
+      dot.className = "sidebar-status-dot"
+      if (s === "connected") dot.classList.add("connected")
+      else if (s === "connecting" || s === "reconnecting") dot.classList.add("connecting")
+      else if (s === "error" || s === "closed") dot.classList.add("error")
+    }
   }
 
-  // ── Rendering: task cards ───────────────────────────────────────
-  function renderTasks() {
-    if (!taskGrid) return
+  function updateAgentCount() {
+    var countEl = document.getElementById("sidebar-agent-count")
+    if (!countEl) return
+    var active = 0
+    for (var i = 0; i < state.tasks.length; i++) {
+      if (state.tasks[i].status !== "done") active++
+    }
+    countEl.textContent = active
+  }
 
-    var statusVal = filterStatus ? filterStatus.value : ""
-    var projectVal = filterProject ? filterProject.value : ""
+  // ── Sidebar ───────────────────────────────────────────────────────
+  function renderSidebar() {
+    var icons = document.querySelectorAll(".sidebar-icon[data-view]")
+    for (var i = 0; i < icons.length; i++) {
+      if (icons[i].dataset.view === state.activeView) {
+        icons[i].classList.add("sidebar-icon--active")
+      } else {
+        icons[i].classList.remove("sidebar-icon--active")
+      }
+    }
+  }
 
+  function handleSidebarClick(e) {
+    var btn = e.currentTarget
+    var view = btn.dataset.view
+    if (!view) return
+    state.activeView = view
+    renderSidebar()
+  }
+
+  // ── Filter bar ────────────────────────────────────────────────────
+  function renderFilterBar() {
+    var filterBar = document.getElementById("filter-bar")
+    if (!filterBar) return
+
+    clearChildren(filterBar)
+
+    // "All" pill
+    var allPill = el("button", "filter-pill" + (state.projectFilter === "" ? " filter-pill--active" : ""), "All")
+    allPill.dataset.project = ""
+    allPill.addEventListener("click", handleFilterClick)
+    filterBar.appendChild(allPill)
+
+    // Project pills
+    for (var i = 0; i < state.projects.length; i++) {
+      var name = state.projects[i].name
+      var active = state.projectFilter === name
+      var pill = el("button", "filter-pill" + (active ? " filter-pill--active" : ""), name)
+      pill.dataset.project = name
+      pill.addEventListener("click", handleFilterClick)
+      filterBar.appendChild(pill)
+    }
+  }
+
+  function handleFilterClick(e) {
+    state.projectFilter = e.currentTarget.dataset.project || ""
+    renderFilterBar()
+    renderTaskList()
+  }
+
+  // ── Task list ─────────────────────────────────────────────────────
+  function renderTaskList() {
+    var taskList = document.getElementById("task-list")
+    var emptyEl = document.getElementById("task-list-empty")
+    if (!taskList) return
+
+    // Filter tasks
     var visible = state.tasks.filter(function (t) {
-      if (statusVal && t.status !== statusVal) return false
-      if (projectVal && t.project !== projectVal) return false
+      if (state.projectFilter && t.project !== state.projectFilter) return false
       return true
     })
 
-    // Remove existing cards
-    var cards = taskGrid.querySelectorAll(".task-card")
-    for (var i = 0; i < cards.length; i++) {
-      cards[i].remove()
+    // Remove existing cards and section headers
+    var existing = taskList.querySelectorAll(".agent-card, .task-section-header")
+    for (var i = 0; i < existing.length; i++) {
+      existing[i].remove()
     }
 
     if (visible.length === 0) {
-      if (taskEmpty) {
-        taskEmpty.style.display = ""
-        taskEmpty.textContent =
-          state.tasks.length === 0
-            ? "No tasks yet."
-            : "No tasks match the current filters."
+      if (emptyEl) {
+        emptyEl.style.display = ""
+        emptyEl.textContent = state.tasks.length === 0
+          ? "No agents yet."
+          : "No agents match the current filter."
       }
       return
     }
 
-    if (taskEmpty) taskEmpty.style.display = "none"
+    if (emptyEl) emptyEl.style.display = "none"
 
+    // Split into active and completed
+    var active = []
+    var completed = []
     for (var j = 0; j < visible.length; j++) {
-      taskGrid.appendChild(createTaskCard(visible[j]))
+      if (visible[j].status === "done") {
+        completed.push(visible[j])
+      } else {
+        active.push(visible[j])
+      }
+    }
+
+    // Active section
+    if (active.length > 0) {
+      var activeHeader = el("div", "task-section-header")
+      activeHeader.appendChild(el("span", null, "Active"))
+      activeHeader.appendChild(el("span", "task-section-count", active.length.toString()))
+      taskList.appendChild(activeHeader)
+
+      for (var a = 0; a < active.length; a++) {
+        taskList.appendChild(createAgentCard(active[a]))
+      }
+    }
+
+    // Completed section
+    if (completed.length > 0) {
+      var completedHeader = el("div", "task-section-header")
+      completedHeader.appendChild(el("span", null, "Completed"))
+      completedHeader.appendChild(el("span", "task-section-count", completed.length.toString()))
+      taskList.appendChild(completedHeader)
+
+      for (var c = 0; c < completed.length; c++) {
+        taskList.appendChild(createAgentCard(completed[c]))
+      }
     }
   }
 
-  function createTaskCard(task) {
-    var card = el("div", "task-card")
-    card.setAttribute("data-task-id", task.id)
+  // ── Agent card ────────────────────────────────────────────────────
+  function createAgentCard(task) {
+    var isSelected = state.selectedTaskId === task.id
+    var card = el("div", "agent-card" + (isSelected ? " agent-card--selected" : ""))
+    card.dataset.taskId = task.id
     card.setAttribute("role", "button")
     card.setAttribute("tabindex", "0")
 
-    var sm = STATUS_META[task.status] || STATUS_META.idle
+    // Left border color from task status
+    var borderColor = TASK_STATUS_COLORS[task.status] || "var(--text-dim)"
+    card.style.borderLeftColor = borderColor
 
-    // Top row: status dot + project name
-    var top = el("div", "task-card-top")
-
-    var dot = el("span", "task-status-dot task-status--" + task.status)
-    dot.title = sm.label
-    top.appendChild(dot)
-
-    top.appendChild(el("span", "task-project", task.project || "\u2014"))
+    // Top row: project name + task id
+    var top = el("div", "agent-card-top")
+    top.appendChild(el("span", "agent-card-project", task.project || "\u2014"))
+    top.appendChild(el("span", "agent-card-id", task.id))
     card.appendChild(top)
-
-    // ID + phase row
-    card.appendChild(
-      el("div", "task-id-phase", task.id + " \u00B7 " + (task.phase || "\u2014"))
-    )
 
     // Description
     if (task.description) {
-      card.appendChild(el("div", "task-description", task.description))
+      card.appendChild(el("div", "agent-card-desc", task.description))
     }
 
-    // Footer: duration + branch
-    var footer = el("div", "task-footer")
-    footer.appendChild(el("span", "task-duration", formatDuration(task.createdAt)))
-    if (task.branch) {
-      footer.appendChild(el("span", "task-branch", task.branch))
+    // Footer: status badge + mini session chain
+    var footer = el("div", "agent-card-footer")
+    footer.appendChild(createAgentStatusBadge(task.agentStatus))
+
+    // Ask badge if waiting with question
+    if (task.agentStatus === "waiting" && task.askQuestion) {
+      var askBadge = el("span", "ask-badge", "\u25D0 INPUT")
+      footer.appendChild(askBadge)
     }
+
+    // Mini session chain
+    footer.appendChild(createMiniSessionChain(task))
     card.appendChild(footer)
 
     // Click handler
     card.addEventListener("click", function () {
-      openDetail(task.id)
+      selectTask(task.id)
     })
     card.addEventListener("keydown", function (e) {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault()
-        openDetail(task.id)
+        selectTask(task.id)
       }
     })
 
     return card
   }
 
-  // ── Rendering: project filter ───────────────────────────────────
-  function renderProjectFilter() {
-    if (!filterProject) return
+  // ── Agent status badge ────────────────────────────────────────────
+  function createAgentStatusBadge(agentStatus) {
+    var meta = AGENT_STATUS_META[agentStatus] || AGENT_STATUS_META.idle
+    var badge = el("span", "agent-status-badge")
+    var icon = el("span", "agent-status-badge-icon", meta.icon)
+    icon.style.color = meta.color
+    badge.appendChild(icon)
+    badge.appendChild(document.createTextNode(" " + meta.label))
+    return badge
+  }
 
-    while (filterProject.options.length > 1) {
-      filterProject.remove(1)
+  // ── Mini session chain (in card footer) ───────────────────────────
+  function createMiniSessionChain(task) {
+    var chain = el("div", "mini-session-chain")
+
+    // Use sessions array if available, otherwise fall back to phase
+    var phases = []
+    if (task.sessions && task.sessions.length > 0) {
+      for (var i = 0; i < task.sessions.length; i++) {
+        phases.push({
+          phase: task.sessions[i].phase,
+          status: task.sessions[i].status,
+        })
+      }
+    } else if (task.phase) {
+      var currentIdx = PHASES.indexOf(task.phase)
+      for (var j = 0; j < PHASES.length; j++) {
+        phases.push({
+          phase: PHASES[j],
+          status: j < currentIdx ? "complete" : (j === currentIdx ? "active" : "pending"),
+        })
+      }
     }
 
-    for (var i = 0; i < state.projects.length; i++) {
-      var opt = document.createElement("option")
-      opt.value = state.projects[i].name
-      opt.textContent = state.projects[i].name
-      filterProject.appendChild(opt)
+    for (var k = 0; k < phases.length; k++) {
+      if (k > 0) {
+        var conn = el("span", "mini-connector" + (phases[k - 1].status === "complete" ? " done" : ""))
+        chain.appendChild(conn)
+      }
+      var pipClass = "mini-pip"
+      if (phases[k].status === "complete") pipClass += " done"
+      else if (phases[k].status === "active") pipClass += " active"
+      var pip = el("span", pipClass)
+      pip.title = phases[k].phase
+      chain.appendChild(pip)
     }
+
+    return chain
   }
 
-  // ── Detail panel ────────────────────────────────────────────────
-  function openDetail(taskId) {
-    var task = findTask(taskId)
-    if (!task) return
+  // ── Task selection ────────────────────────────────────────────────
+  function selectTask(id) {
+    state.selectedTaskId = id
+    var task = findTask(id)
 
-    state.selectedTaskId = taskId
-    renderDetail(task)
+    // Update card selection styles
+    var cards = document.querySelectorAll(".agent-card")
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].dataset.taskId === id) {
+        cards[i].classList.add("agent-card--selected")
+        // Update border color
+        if (task) {
+          cards[i].style.borderLeftColor = TASK_STATUS_COLORS[task.status] || "var(--text-dim)"
+        }
+      } else {
+        cards[i].classList.remove("agent-card--selected")
+        // Reset border to task's own color
+        var otherTask = findTask(cards[i].dataset.taskId)
+        if (otherTask) {
+          cards[i].style.borderLeftColor = TASK_STATUS_COLORS[otherTask.status] || "var(--text-dim)"
+        }
+      }
+    }
 
-    if (detailPanel) detailPanel.classList.add("open")
-    if (detailBackdrop) detailBackdrop.classList.add("open")
-    if (detailPanel) detailPanel.setAttribute("aria-hidden", "false")
+    if (task) {
+      renderRightPanel(task)
+      connectTerminal(task)
+    }
+
+    // Mobile: show detail panel
+    var panels = document.getElementById("panels")
+    if (panels) panels.classList.add("detail-active")
+
+    renderChatBar()
   }
 
-  function closeDetail() {
-    state.selectedTaskId = null
-    if (detailPanel) detailPanel.classList.remove("open")
-    if (detailBackdrop) detailBackdrop.classList.remove("open")
-    if (detailPanel) detailPanel.setAttribute("aria-hidden", "true")
+  // ── Right panel ───────────────────────────────────────────────────
+  function renderRightPanel(task) {
+    var emptyState = document.getElementById("empty-state")
+    var detailView = document.getElementById("detail-view")
+
+    if (!task) {
+      if (emptyState) emptyState.style.display = ""
+      if (detailView) detailView.style.display = "none"
+      return
+    }
+
+    if (emptyState) emptyState.style.display = "none"
+    if (detailView) detailView.style.display = ""
+
+    renderDetailHeader(task)
+    renderSessionChain(task)
+    renderPreviewHeader(task)
   }
 
-  function renderDetail(task) {
-    if (!detailBody) return
+  // ── Detail header ─────────────────────────────────────────────────
+  function renderDetailHeader(task) {
+    var header = document.getElementById("detail-header")
+    if (!header) return
 
-    var sm = STATUS_META[task.status] || STATUS_META.idle
+    clearChildren(header)
 
-    clearChildren(detailBody)
+    // Top row: back button + title + actions
+    var top = el("div", "detail-header-top")
 
-    // Title row
-    var title = el("div", "detail-title")
-    var titleDot = el("span", "task-status-dot task-status--" + task.status)
-    titleDot.style.display = "inline-block"
-    titleDot.style.verticalAlign = "middle"
-    titleDot.style.marginRight = "8px"
-    title.appendChild(titleDot)
-    title.appendChild(document.createTextNode(
-      (task.project || "\u2014") + " \u00B7 " + task.id
-    ))
-    detailBody.appendChild(title)
+    var backBtn = el("button", "detail-back-btn", "\u2190 Back")
+    backBtn.addEventListener("click", handleMobileBack)
+    top.appendChild(backBtn)
 
-    // Description
-    detailBody.appendChild(
-      el("div", "detail-meta", task.description || "No description")
-    )
+    top.appendChild(el("span", "detail-title", (task.project || "\u2014") + " \u00B7 " + task.id))
 
-    // Phase progress
-    var phaseSection = el("div", "detail-section")
-    phaseSection.appendChild(el("div", "detail-section-label", "Phase"))
-    phaseSection.appendChild(buildPhaseTrack(task.phase))
-    detailBody.appendChild(phaseSection)
+    var actions = el("div", "detail-actions")
+    actions.appendChild(createAgentStatusBadge(task.agentStatus))
+    top.appendChild(actions)
 
-    // Details section
-    var infoSection = el("div", "detail-section")
-    infoSection.appendChild(el("div", "detail-section-label", "Details"))
+    header.appendChild(top)
 
-    var infoGrid = el("div")
-    infoGrid.style.fontSize = "0.88rem"
-    infoGrid.style.lineHeight = "1.8"
-
-    appendInfoRow(infoGrid, "Status", sm.label)
-    if (task.branch) appendInfoRow(infoGrid, "Branch", task.branch)
-    appendInfoRow(infoGrid, "Duration", formatDuration(task.createdAt))
-    if (task.sessionId) appendInfoRow(infoGrid, "Session", task.sessionId)
-    if (task.parentTaskId) appendInfoRow(infoGrid, "Parent", task.parentTaskId)
-
-    infoSection.appendChild(infoGrid)
-    detailBody.appendChild(infoSection)
-
-    // Terminal preview placeholder
-    var termSection = el("div", "detail-section")
-    termSection.appendChild(el("div", "detail-section-label", "Terminal"))
-
-    var termBox = el("div", "detail-terminal")
-    var termPlaceholder = el("div", "detail-terminal-placeholder")
-    termPlaceholder.textContent = task.sessionId
-      ? "Terminal preview for session " + task.sessionId + "..."
-      : "No session attached."
-    termBox.appendChild(termPlaceholder)
-    termSection.appendChild(termBox)
-    detailBody.appendChild(termSection)
+    // Meta row: description + branch
+    var meta = el("div", "detail-meta")
+    if (task.description) {
+      meta.appendChild(document.createTextNode(task.description))
+    }
+    if (task.branch) {
+      var sep = el("span", null, "\u00B7")
+      sep.style.color = "var(--text-dim)"
+      meta.appendChild(sep)
+      meta.appendChild(el("span", null, task.branch))
+    }
+    header.appendChild(meta)
   }
 
-  function appendInfoRow(parent, label, value) {
-    var strong = document.createElement("strong")
-    strong.textContent = label + ": "
-    parent.appendChild(strong)
-    parent.appendChild(document.createTextNode(value))
-    parent.appendChild(document.createElement("br"))
-  }
+  // ── Session chain (detail panel) ──────────────────────────────────
+  function renderSessionChain(task) {
+    var container = document.getElementById("session-chain")
+    if (!container) return
 
-  function buildPhaseTrack(currentPhase) {
-    var currentIdx = PHASES.indexOf(currentPhase)
-    if (currentIdx < 0) currentIdx = -1
+    clearChildren(container)
 
-    var track = el("div", "phase-track")
+    // Use sessions array if available, otherwise fall back to phase pips
+    var phases = []
+    if (task.sessions && task.sessions.length > 0) {
+      for (var i = 0; i < task.sessions.length; i++) {
+        var s = task.sessions[i]
+        phases.push({
+          label: s.phase,
+          dotLabel: (s.phase || "?").charAt(0).toUpperCase(),
+          status: s.status === "complete" ? "done" : (s.status === "active" ? "active" : ""),
+          duration: s.duration || "",
+          artifact: s.artifact || "",
+        })
+      }
+    } else if (task.phase) {
+      var currentIdx = PHASES.indexOf(task.phase)
+      for (var j = 0; j < PHASES.length; j++) {
+        var st = ""
+        if (j < currentIdx) st = "done"
+        else if (j === currentIdx) st = "active"
+        phases.push({
+          label: PHASES[j],
+          dotLabel: PHASE_DOT_LABELS[PHASES[j]],
+          status: st,
+          duration: "",
+          artifact: "",
+        })
+      }
+    }
 
-    for (var i = 0; i < PHASES.length; i++) {
-      // Connector between phases
-      if (i > 0) {
-        var conn = el("div", i <= currentIdx ? "phase-connector done" : "phase-connector")
-        track.appendChild(conn)
+    for (var k = 0; k < phases.length; k++) {
+      // Connector
+      if (k > 0) {
+        var connClass = "session-chain-connector"
+        if (phases[k - 1].status === "done") connClass += " done"
+        container.appendChild(el("div", connClass))
       }
 
-      // Phase pip
-      var pip = el("div", "phase-pip")
+      // Pip
+      var pip = el("div", "session-chain-pip")
 
-      var dotClass = "phase-dot"
-      if (i < currentIdx) dotClass += " done"
-      else if (i === currentIdx) dotClass += " active"
+      var dotClass = "session-chain-dot"
+      if (phases[k].status === "done") dotClass += " done"
+      else if (phases[k].status === "active") dotClass += " active"
+      pip.appendChild(el("div", dotClass, phases[k].dotLabel))
 
-      var phaseDot = el("div", dotClass, PHASE_DOT_LABELS[PHASES[i]])
-      pip.appendChild(phaseDot)
-      track.appendChild(pip)
+      var lblClass = "session-chain-label"
+      if (phases[k].status === "active") lblClass += " active"
+      var lblText = phases[k].label
+      if (phases[k].duration) lblText += " " + phases[k].duration
+      pip.appendChild(el("div", lblClass, lblText))
+
+      container.appendChild(pip)
     }
-
-    // Labels row
-    var labelsRow = el("div")
-    labelsRow.style.display = "flex"
-    labelsRow.style.justifyContent = "space-between"
-
-    for (var j = 0; j < PHASES.length; j++) {
-      var lblClass = j === currentIdx ? "phase-label active" : "phase-label"
-      var lbl = el("div", lblClass, PHASE_LABELS[PHASES[j]])
-      labelsRow.appendChild(lbl)
-    }
-
-    var container = el("div")
-    container.appendChild(track)
-    container.appendChild(labelsRow)
-    return container
   }
 
-  // ── Utilities ───────────────────────────────────────────────────
+  // ── Preview header ────────────────────────────────────────────────
+  function renderPreviewHeader(task) {
+    var container = document.getElementById("preview-header")
+    if (!container) return
+
+    clearChildren(container)
+
+    var projLabel = el("span", "preview-header-project", task.project || "\u2014")
+    container.appendChild(projLabel)
+
+    var agentMeta = AGENT_STATUS_META[task.agentStatus] || AGENT_STATUS_META.idle
+    var statusSpan = el("span", "preview-header-status")
+    statusSpan.textContent = agentMeta.icon + " " + agentMeta.label
+    statusSpan.style.color = agentMeta.color
+    container.appendChild(statusSpan)
+  }
+
+  // ── Terminal management ───────────────────────────────────────────
+  function connectTerminal(task) {
+    disconnectTerminal()
+    var container = document.getElementById("terminal-container")
+    if (!container) return
+    clearChildren(container)
+
+    if (!task.tmuxSession) {
+      var placeholder = el("div", "terminal-placeholder", "No session attached.")
+      container.appendChild(placeholder)
+      return
+    }
+
+    // Check if Terminal (xterm.js) is available
+    if (typeof Terminal === "undefined") {
+      var fallback = el("div", "terminal-placeholder", "Terminal emulator not available. Check xterm.js assets.")
+      container.appendChild(fallback)
+      return
+    }
+
+    var term = new Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: "var(--font-mono)",
+      theme: {
+        background: "#080a0e",
+        foreground: "#c8d0dc",
+        cursor: "#e8a932",
+      },
+    })
+    var fitAddon = new FitAddon.FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(container)
+    fitAddon.fit()
+
+    state.terminal = term
+    state.fitAddon = fitAddon
+
+    var protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(task.tmuxSession)
+    if (state.authToken) wsUrl += "?token=" + encodeURIComponent(state.authToken)
+    var ws = new WebSocket(wsUrl)
+    state.terminalWs = ws
+
+    ws.binaryType = "arraybuffer"
+    ws.onmessage = function (e) {
+      if (e.data instanceof ArrayBuffer) {
+        term.write(new Uint8Array(e.data))
+      } else {
+        term.write(e.data)
+      }
+    }
+    ws.onclose = function () { state.terminalWs = null }
+    term.onData(function (data) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data)
+    })
+  }
+
+  function disconnectTerminal() {
+    if (state.terminalWs) {
+      state.terminalWs.close()
+      state.terminalWs = null
+    }
+    if (state.terminal) {
+      state.terminal.dispose()
+      state.terminal = null
+    }
+    state.fitAddon = null
+  }
+
+  // ── Resize handler ────────────────────────────────────────────────
+  window.addEventListener("resize", function () {
+    if (state.fitAddon) state.fitAddon.fit()
+  })
+
+  // ── Mobile back ───────────────────────────────────────────────────
+  function handleMobileBack() {
+    state.selectedTaskId = null
+    disconnectTerminal()
+    var panels = document.getElementById("panels")
+    if (panels) panels.classList.remove("detail-active")
+
+    // Reset right panel to empty state
+    var emptyState = document.getElementById("empty-state")
+    var detailView = document.getElementById("detail-view")
+    if (emptyState) emptyState.style.display = ""
+    if (detailView) detailView.style.display = "none"
+
+    renderTaskList()
+    renderChatBar()
+  }
+
+  // ── Chat bar ──────────────────────────────────────────────────────
+  function renderChatBar() {
+    var input = document.getElementById("chat-input")
+    var modeIcon = document.getElementById("chat-mode-icon")
+    var modeLabel = document.getElementById("chat-mode-label")
+
+    var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
+
+    if (task && task.agentStatus !== "complete" && task.agentStatus !== "idle") {
+      // Reply mode
+      if (modeIcon) { modeIcon.textContent = "\u21A9"; modeIcon.style.color = "var(--accent)" }
+      if (modeLabel) modeLabel.textContent = task.id + "/" + task.phase
+      if (input) input.placeholder = "Reply to " + task.id + "..."
+    } else {
+      // New task mode
+      var project = ""
+      if (task) project = task.project
+      else if (state.projectFilter) project = state.projectFilter
+
+      if (modeIcon) { modeIcon.textContent = "+"; modeIcon.style.color = "var(--blue)" }
+      if (modeLabel) modeLabel.textContent = project ? project : "auto-route"
+      if (input) input.placeholder = "Describe a new task..."
+    }
+  }
+
+  function sendChatMessage() {
+    var input = document.getElementById("chat-input")
+    if (!input) return
+    var text = input.value.trim()
+    if (!text) return
+
+    var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
+    var isReply = task && task.agentStatus !== "complete" && task.agentStatus !== "idle"
+
+    if (isReply && state.selectedTaskId) {
+      sendTaskInput(state.selectedTaskId, text)
+    } else {
+      openNewTaskModalWithDescription(text)
+    }
+    input.value = ""
+  }
+
+  function sendTaskInput(taskId, text) {
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/tasks/" + taskId + "/input"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ input: text }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("send failed: " + r.status)
+      })
+      .catch(function (err) {
+        console.error("sendTaskInput:", err)
+      })
+  }
+
+  // ── Utilities ─────────────────────────────────────────────────────
   function formatDuration(isoDate) {
     if (!isoDate) return "\u2014"
     var created = new Date(isoDate)
@@ -431,32 +739,16 @@
     return days + "d " + (hours % 24) + "h"
   }
 
-  // ── Chat input ──────────────────────────────────────────────────
-  function sendChatInput() {
-    if (!state.selectedTaskId || !chatInput) return
-    var input = chatInput.value.trim()
-    if (!input) return
+  // ── New Task modal ────────────────────────────────────────────────
+  var newTaskModal = document.getElementById("new-task-modal")
+  var newTaskBackdrop = document.getElementById("new-task-backdrop")
+  var newTaskProject = document.getElementById("new-task-project")
+  var newTaskDesc = document.getElementById("new-task-desc")
+  var newTaskPhase = document.getElementById("new-task-phase")
+  var newTaskSubmit = document.getElementById("new-task-submit")
+  var routeSuggestion = document.getElementById("route-suggestion")
 
-    var headers = authHeaders()
-    headers["Content-Type"] = "application/json"
-
-    fetch(apiPathWithToken("/api/tasks/" + state.selectedTaskId + "/input"), {
-      method: "POST",
-      headers: headers,
-      body: JSON.stringify({ input: input }),
-    })
-      .then(function (r) {
-        if (!r.ok) throw new Error("send failed: " + r.status)
-        chatInput.value = ""
-      })
-      .catch(function (err) {
-        console.error("sendChatInput:", err)
-      })
-  }
-
-  // ── New Task modal ───────────────────────────────────────────────
   function openNewTaskModal() {
-    // Populate project selector from loaded projects.
     clearChildren(newTaskProject)
     var hasProjects = state.projects.length > 0
     for (var i = 0; i < state.projects.length; i++) {
@@ -482,6 +774,12 @@
     if (newTaskBackdrop) newTaskBackdrop.classList.add("open")
     if (newTaskModal) newTaskModal.setAttribute("aria-hidden", "false")
     if (newTaskDesc) newTaskDesc.focus()
+  }
+
+  function openNewTaskModalWithDescription(text) {
+    openNewTaskModal()
+    if (newTaskDesc) newTaskDesc.value = text
+    suggestProject(text)
   }
 
   function closeNewTaskModal() {
@@ -514,14 +812,14 @@
       .then(function (data) {
         closeNewTaskModal()
         fetchTasks()
-        if (data.task && data.task.id) openDetail(data.task.id)
+        if (data.task && data.task.id) selectTask(data.task.id)
       })
       .catch(function (err) {
         console.error("submitNewTask:", err)
       })
   }
 
-  // ── Auto-suggest project via routing ─────────────────────────────
+  // ── Auto-suggest project via routing ──────────────────────────────
   var routeTimer = null
 
   function suggestProject(message) {
@@ -559,7 +857,6 @@
               " (" + Math.round(data.confidence * 100) + "% match)"
             routeSuggestion.className = "route-suggestion"
           }
-          // Auto-select the suggested project in the dropdown.
           if (newTaskProject) {
             for (var i = 0; i < newTaskProject.options.length; i++) {
               if (newTaskProject.options[i].value === data.project) {
@@ -575,63 +872,58 @@
     }, 300)
   }
 
-  // ── Event listeners ─────────────────────────────────────────────
-  if (filterStatus) {
-    filterStatus.addEventListener("change", renderTasks)
-  }
-  if (filterProject) {
-    filterProject.addEventListener("change", renderTasks)
-  }
-  if (detailBack) {
-    detailBack.addEventListener("click", closeDetail)
-  }
-  if (detailBackdrop) {
-    detailBackdrop.addEventListener("click", closeDetail)
+  // ── Event listeners ───────────────────────────────────────────────
+
+  // Sidebar view icons
+  var sidebarIcons = document.querySelectorAll(".sidebar-icon[data-view]")
+  for (var si = 0; si < sidebarIcons.length; si++) {
+    sidebarIcons[si].addEventListener("click", handleSidebarClick)
   }
 
-  if (chatSend) {
-    chatSend.addEventListener("click", sendChatInput)
-  }
-  if (chatInput) {
-    chatInput.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") {
-        e.preventDefault()
-        sendChatInput()
-      }
-    })
-  }
-  if (newTaskBtn) {
-    newTaskBtn.addEventListener("click", openNewTaskModal)
-  }
-  if (newTaskClose) {
-    newTaskClose.addEventListener("click", closeNewTaskModal)
-  }
-  if (newTaskCancel) {
-    newTaskCancel.addEventListener("click", closeNewTaskModal)
-  }
-  if (newTaskBackdrop) {
-    newTaskBackdrop.addEventListener("click", closeNewTaskModal)
-  }
-  if (newTaskSubmit) {
-    newTaskSubmit.addEventListener("click", submitNewTask)
-  }
+  // New task button (sidebar +)
+  var newTaskBtn = document.getElementById("new-task-btn")
+  if (newTaskBtn) newTaskBtn.addEventListener("click", openNewTaskModal)
+
+  // Modal controls
+  var newTaskClose = document.getElementById("new-task-close")
+  var newTaskCancel = document.getElementById("new-task-cancel")
+  if (newTaskClose) newTaskClose.addEventListener("click", closeNewTaskModal)
+  if (newTaskCancel) newTaskCancel.addEventListener("click", closeNewTaskModal)
+  if (newTaskBackdrop) newTaskBackdrop.addEventListener("click", closeNewTaskModal)
+  if (newTaskSubmit) newTaskSubmit.addEventListener("click", submitNewTask)
   if (newTaskDesc) {
     newTaskDesc.addEventListener("input", function () {
       suggestProject(newTaskDesc.value.trim())
     })
   }
 
+  // Chat bar
+  var chatSendBtn = document.getElementById("chat-send-btn")
+  var chatInput = document.getElementById("chat-input")
+  if (chatSendBtn) chatSendBtn.addEventListener("click", sendChatMessage)
+  if (chatInput) {
+    chatInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault()
+        sendChatMessage()
+      }
+    })
+  }
+
+  // Escape key
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") {
       if (newTaskModal && newTaskModal.classList.contains("open")) {
         closeNewTaskModal()
       } else if (state.selectedTaskId) {
-        closeDetail()
+        handleMobileBack()
       }
     }
   })
 
-  // ── Init ────────────────────────────────────────────────────────
+  // ── Init ──────────────────────────────────────────────────────────
+  renderSidebar()
+  renderChatBar()
   fetchTasks()
   fetchProjects()
   connectSSE()
