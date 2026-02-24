@@ -312,6 +312,87 @@ func TestTaskByIDMissingID(t *testing.T) {
 	}
 }
 
+func TestUpdateTaskPhase(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"phase":"review"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Phase != hub.PhaseReview {
+		t.Fatalf("expected phase review, got %s", resp.Task.Phase)
+	}
+	if resp.Task.Description != "Fix auth bug" {
+		t.Fatalf("description should be unchanged, got %s", resp.Task.Description)
+	}
+}
+
+func TestUpdateTaskStatus(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"status":"complete"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Status != hub.TaskStatusComplete {
+		t.Fatalf("expected status complete, got %s", resp.Task.Status)
+	}
+}
+
+func TestUpdateTaskNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"phase":"review"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/t-nonexistent", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
 func TestProjectsEndpointEmpty(t *testing.T) {
 	srv := newTestServerWithHub(t)
 

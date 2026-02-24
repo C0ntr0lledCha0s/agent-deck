@@ -176,8 +176,45 @@ func (s *Server) handleTaskGet(w http.ResponseWriter, taskID string) {
 	writeJSON(w, http.StatusOK, taskDetailResponse{Task: task})
 }
 
+// handleTaskUpdate serves PATCH /api/tasks/{id}.
 func (s *Server) handleTaskUpdate(w http.ResponseWriter, r *http.Request, taskID string) {
-	writeAPIError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	var req updateTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	if req.Description != nil {
+		task.Description = *req.Description
+	}
+	if req.Phase != nil {
+		task.Phase = hub.Phase(*req.Phase)
+	}
+	if req.Status != nil {
+		task.Status = hub.TaskStatus(*req.Status)
+	}
+	if req.Branch != nil {
+		task.Branch = *req.Branch
+	}
+
+	if err := s.hubTasks.Save(task); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update task")
+		return
+	}
+
+	s.notifyTaskChanged()
+	writeJSON(w, http.StatusOK, taskDetailResponse{Task: task})
 }
 
 func (s *Server) handleTaskDelete(w http.ResponseWriter, taskID string) {
