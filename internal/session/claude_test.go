@@ -552,6 +552,10 @@ func TestFindActiveSessionIDExcluding(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projectDir, sessionB+".jsonl"), []byte("{}"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// Ensure sessionB has a strictly later mod time so the "most recent" check is deterministic
+	past := time.Now().Add(-10 * time.Second)
+	os.Chtimes(filepath.Join(projectDir, sessionA+".jsonl"), past, past)
+	os.Chtimes(filepath.Join(projectDir, sessionB+".jsonl"), time.Now(), time.Now())
 
 	t.Run("no exclude returns most recent", func(t *testing.T) {
 		got := findActiveSessionIDExcluding(configDir, projectPath, nil)
