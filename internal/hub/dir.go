@@ -1,16 +1,17 @@
 package hub
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// GetHubDir returns the hub data directory (~/.agent-deck/hub).
-func GetHubDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
+// GetHubDir returns the hub data directory for the given profile.
+// The path is <profileDir>/hub, e.g. ~/.agent-deck/profiles/default/hub.
+func GetHubDir(profile string) (string, error) {
+	profileDir, err := session.GetProfileDir(profile)
 	if err != nil {
-		return "", fmt.Errorf("get home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(homeDir, ".agent-deck", "hub"), nil
+	return filepath.Join(profileDir, "hub"), nil
 }
