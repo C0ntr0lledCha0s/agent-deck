@@ -12,16 +12,15 @@ const (
 	PhaseReview     Phase = "review"
 )
 
-// TaskStatus represents the current state of a task.
+// TaskStatus represents the workflow stage of a task (kanban column).
 type TaskStatus string
 
 const (
-	TaskStatusThinking TaskStatus = "thinking"
-	TaskStatusWaiting  TaskStatus = "waiting"
+	TaskStatusBacklog  TaskStatus = "backlog"
+	TaskStatusPlanning TaskStatus = "planning"
 	TaskStatusRunning  TaskStatus = "running"
-	TaskStatusIdle     TaskStatus = "idle"
-	TaskStatusError    TaskStatus = "error"
-	TaskStatusComplete TaskStatus = "complete"
+	TaskStatusReview   TaskStatus = "review"
+	TaskStatusDone     TaskStatus = "done"
 )
 
 // AgentStatus represents what Claude is doing right now.

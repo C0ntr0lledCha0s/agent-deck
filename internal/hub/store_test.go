@@ -76,7 +76,7 @@ func TestSavePreservesExistingID(t *testing.T) {
 		Project:     "web-app",
 		Description: "Custom ID task",
 		Phase:       PhasePlan,
-		Status:      TaskStatusIdle,
+		Status:      TaskStatusBacklog,
 	}
 
 	if err := store.Save(task); err != nil {
@@ -94,7 +94,8 @@ func TestSaveUpdatesExistingTask(t *testing.T) {
 		Project:     "api-service",
 		Description: "Original",
 		Phase:       PhaseBrainstorm,
-		Status:      TaskStatusThinking,
+		Status:      TaskStatusRunning,
+		AgentStatus: AgentStatusThinking,
 	}
 	if err := store.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -171,7 +172,7 @@ func TestDelete(t *testing.T) {
 		Project:     "test",
 		Description: "To delete",
 		Phase:       PhaseExecute,
-		Status:      TaskStatusComplete,
+		Status:      TaskStatusDone,
 	}
 	if err := store.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -237,6 +238,42 @@ func TestNextIDSequence(t *testing.T) {
 	// Should be t-006 (max was t-005, not reusing t-003)
 	if task.ID != "t-006" {
 		t.Fatalf("expected ID t-006, got %s", task.ID)
+	}
+}
+
+func TestNewTaskStatusValues(t *testing.T) {
+	store := newTestStore(t)
+
+	for _, tc := range []struct {
+		status TaskStatus
+		agent  AgentStatus
+	}{
+		{TaskStatusBacklog, AgentStatusIdle},
+		{TaskStatusPlanning, AgentStatusWaiting},
+		{TaskStatusRunning, AgentStatusRunning},
+		{TaskStatusReview, AgentStatusThinking},
+		{TaskStatusDone, AgentStatusComplete},
+	} {
+		task := &Task{
+			Project:     "test",
+			Description: "status " + string(tc.status),
+			Phase:       PhaseExecute,
+			Status:      tc.status,
+			AgentStatus: tc.agent,
+		}
+		if err := store.Save(task); err != nil {
+			t.Fatalf("Save %s: %v", tc.status, err)
+		}
+		got, err := store.Get(task.ID)
+		if err != nil {
+			t.Fatalf("Get %s: %v", tc.status, err)
+		}
+		if got.Status != tc.status {
+			t.Fatalf("expected status %s, got %s", tc.status, got.Status)
+		}
+		if got.AgentStatus != tc.agent {
+			t.Fatalf("expected agentStatus %s, got %s", tc.agent, got.AgentStatus)
+		}
 	}
 }
 
