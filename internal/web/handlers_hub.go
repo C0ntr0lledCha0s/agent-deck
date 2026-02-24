@@ -85,6 +85,10 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 
 	phase := hub.PhaseExecute
 	if req.Phase != "" {
+		if !isValidPhase(req.Phase) {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid phase value")
+			return
+		}
 		phase = hub.Phase(req.Phase)
 	}
 
@@ -192,6 +196,15 @@ func (s *Server) handleTaskUpdate(w http.ResponseWriter, r *http.Request, taskID
 	var req updateTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	if req.Phase != nil && !isValidPhase(*req.Phase) {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid phase value")
+		return
+	}
+	if req.Status != nil && !isValidStatus(*req.Status) {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid status value")
 		return
 	}
 
@@ -373,4 +386,21 @@ type taskInputRequest struct {
 type taskInputResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
+}
+
+func isValidPhase(p string) bool {
+	switch hub.Phase(p) {
+	case hub.PhaseBrainstorm, hub.PhasePlan, hub.PhaseExecute, hub.PhaseReview:
+		return true
+	}
+	return false
+}
+
+func isValidStatus(s string) bool {
+	switch hub.TaskStatus(s) {
+	case hub.TaskStatusThinking, hub.TaskStatusWaiting, hub.TaskStatusRunning,
+		hub.TaskStatusIdle, hub.TaskStatusError, hub.TaskStatusComplete:
+		return true
+	}
+	return false
 }
