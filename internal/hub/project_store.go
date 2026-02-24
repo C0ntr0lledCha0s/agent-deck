@@ -96,8 +96,12 @@ func (s *ProjectStore) Save(project *Project) error {
 	}
 
 	path := filepath.Join(s.projectDir, project.Name+".json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return fmt.Errorf("write project file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename project file: %w", err)
 	}
 
 	return nil

@@ -101,8 +101,12 @@ func (s *TaskStore) Save(task *Task) error {
 	}
 
 	path := filepath.Join(s.taskDir, task.ID+".json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return fmt.Errorf("write task file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename task file: %w", err)
 	}
 
 	return nil
@@ -126,6 +130,22 @@ func (s *TaskStore) Delete(id string) error {
 	return nil
 }
 
+// oldStatusMigration maps legacy dual-model status values (from earlier versions
+// that used separate TaskStatus + AgentStatus) to the current single TaskStatus.
+var oldStatusMigration = map[string]TaskStatus{
+	"backlog":  TaskStatusIdle,
+	"planning": TaskStatusWaiting,
+	"review":   TaskStatusWaiting,
+	"done":     TaskStatusComplete,
+}
+
+// migrateTask detects old-format status values and migrates them.
+func migrateTask(task *Task) {
+	if m, ok := oldStatusMigration[string(task.Status)]; ok {
+		task.Status = m
+	}
+}
+
 func (s *TaskStore) readTaskFile(filename string) (*Task, error) {
 	data, err := os.ReadFile(filepath.Join(s.taskDir, filename))
 	if err != nil {
@@ -135,6 +155,7 @@ func (s *TaskStore) readTaskFile(filename string) (*Task, error) {
 	if err := json.Unmarshal(data, &task); err != nil {
 		return nil, fmt.Errorf("unmarshal task %s: %w", filename, err)
 	}
+	migrateTask(&task)
 	return &task, nil
 }
 

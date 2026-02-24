@@ -598,6 +598,7 @@ func (s *Server) handleProjectsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.notifyTaskChanged()
 	writeJSON(w, http.StatusCreated, projectDetailResponse{Project: project})
 }
 
@@ -671,13 +672,13 @@ func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request, nam
 		project.Path = *req.Path
 	}
 	if req.Keywords != nil {
-		project.Keywords = req.Keywords
+		project.Keywords = *req.Keywords
 	}
 	if req.Container != nil {
 		project.Container = *req.Container
 	}
 	if req.DefaultMCPs != nil {
-		project.DefaultMCPs = req.DefaultMCPs
+		project.DefaultMCPs = *req.DefaultMCPs
 	}
 
 	if err := s.hubProjects.Save(project); err != nil {
@@ -685,6 +686,7 @@ func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 
+	s.notifyTaskChanged()
 	writeJSON(w, http.StatusOK, projectDetailResponse{Project: project})
 }
 
@@ -700,6 +702,7 @@ func (s *Server) handleProjectDelete(w http.ResponseWriter, name string) {
 		return
 	}
 
+	s.notifyTaskChanged()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -735,10 +738,10 @@ type createProjectRequest struct {
 }
 
 type updateProjectRequest struct {
-	Path        *string  `json:"path,omitempty"`
-	Keywords    []string `json:"keywords,omitempty"`
-	Container   *string  `json:"container,omitempty"`
-	DefaultMCPs []string `json:"defaultMcps,omitempty"`
+	Path        *string   `json:"path,omitempty"`
+	Keywords    *[]string `json:"keywords,omitempty"`
+	Container   *string   `json:"container,omitempty"`
+	DefaultMCPs *[]string `json:"defaultMcps,omitempty"`
 }
 
 type routeRequest struct {
@@ -793,12 +796,12 @@ func isValidStatus(s string) bool {
 
 // handleRoute serves POST /api/route.
 func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
-		return
-	}
 	if !s.authorizeRequest(r) {
 		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
