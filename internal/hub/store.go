@@ -12,11 +12,17 @@ import (
 	"time"
 )
 
-// TaskStore provides filesystem-based CRUD for Task records.
-// Tasks are stored as individual JSON files under basePath/tasks/.
+// TaskStore provides filesystem JSON-based CRUD for Task records.
+// Each task is stored as an individual JSON file (e.g. t-001.json) under basePath/tasks/.
 type TaskStore struct {
 	mu      sync.RWMutex
 	taskDir string
+}
+
+// validTaskID returns true if id is safe to use as a filename component.
+func validTaskID(id string) bool {
+	return id != "" && id != "." && id != ".." &&
+		!strings.Contains(id, "/") && !strings.Contains(id, "\\")
 }
 
 // NewTaskStore creates a TaskStore backed by the given base directory.
@@ -60,6 +66,9 @@ func (s *TaskStore) List() ([]*Task, error) {
 
 // Get retrieves a single task by ID.
 func (s *TaskStore) Get(id string) (*Task, error) {
+	if !validTaskID(id) {
+		return nil, fmt.Errorf("invalid task ID: %q", id)
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -78,6 +87,8 @@ func (s *TaskStore) Save(task *Task) error {
 			return err
 		}
 		task.ID = id
+	} else if !validTaskID(task.ID) {
+		return fmt.Errorf("invalid task ID: %q", task.ID)
 	}
 	if task.CreatedAt.IsZero() {
 		task.CreatedAt = time.Now().UTC()
@@ -99,6 +110,9 @@ func (s *TaskStore) Save(task *Task) error {
 
 // Delete removes a task by ID.
 func (s *TaskStore) Delete(id string) error {
+	if !validTaskID(id) {
+		return fmt.Errorf("invalid task ID: %q", id)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

@@ -21,7 +21,7 @@
 }
 
 .nav-tab:hover {
-  background: #f0f4f8;
+  background: var(--bg);
   color: var(--text);
 }
 
@@ -275,7 +275,7 @@
 }
 
 .detail-back:hover {
-  background: #f0f4f8;
+  background: var(--bg);
 }
 
 .detail-body {

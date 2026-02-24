@@ -32,7 +32,8 @@
   }
 
   var PHASES = ["brainstorm", "plan", "execute", "review"]
-  var PHASE_LABELS = { brainstorm: "B", plan: "P", execute: "E", review: "R" }
+  var PHASE_DOT_LABELS = { brainstorm: "B", plan: "P", execute: "E", review: "R" }
+  var PHASE_LABELS = { brainstorm: "Brainstorm", plan: "Plan", execute: "Execute", review: "Review" }
 
   // ── Auth ────────────────────────────────────────────────────────
   function readAuthTokenFromURL() {
@@ -373,7 +374,7 @@
       if (i < currentIdx) dotClass += " done"
       else if (i === currentIdx) dotClass += " active"
 
-      var phaseDot = el("div", dotClass, PHASE_LABELS[PHASES[i]])
+      var phaseDot = el("div", dotClass, PHASE_DOT_LABELS[PHASES[i]])
       pip.appendChild(phaseDot)
       track.appendChild(pip)
     }
@@ -381,17 +382,11 @@
     // Labels row
     var labelsRow = el("div")
     labelsRow.style.display = "flex"
-    labelsRow.style.gap = "0"
+    labelsRow.style.justifyContent = "space-between"
 
     for (var j = 0; j < PHASES.length; j++) {
-      if (j > 0) {
-        var spacer = el("div")
-        spacer.style.width = "24px"
-        labelsRow.appendChild(spacer)
-      }
       var lblClass = j === currentIdx ? "phase-label active" : "phase-label"
-      var lbl = el("div", lblClass, PHASES[j].charAt(0).toUpperCase())
-      lbl.style.width = "24px"
+      var lbl = el("div", lblClass, PHASE_LABELS[PHASES[j]])
       labelsRow.appendChild(lbl)
     }
 

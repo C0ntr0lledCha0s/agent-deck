@@ -76,7 +76,7 @@ func NewServer(cfg Config) *Server {
 	webLog := logging.ForComponent(logging.CompWeb)
 
 	// Initialize hub task store and project registry.
-	if hubDir, err := hub.GetHubDir(); err != nil {
+	if hubDir, err := hub.GetHubDir(cfg.Profile); err != nil {
 		webLog.Warn("hub_disabled", slog.String("error", err.Error()))
 	} else {
 		if ts, err := hub.NewTaskStore(hubDir); err != nil {
@@ -277,6 +277,8 @@ func (s *Server) unsubscribeTaskChanges(ch chan struct{}) {
 	s.taskSubscribersMu.Unlock()
 }
 
+// notifyTaskChanged broadcasts to SSE subscribers that task data changed.
+// TODO: Call this from POST/PATCH/DELETE task handlers when they are added in Phase 2.
 func (s *Server) notifyTaskChanged() {
 	s.taskSubscribersMu.Lock()
 	for ch := range s.taskSubscribers {
