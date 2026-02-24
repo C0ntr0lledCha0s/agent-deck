@@ -42,12 +42,21 @@ func (l *SessionLauncher) Launch(ctx context.Context, container, taskID string) 
 }
 
 // SendInput sends text to a tmux session via send-keys.
+// Uses -l (literal) to prevent tmux from interpreting key names in user input.
 func (l *SessionLauncher) SendInput(ctx context.Context, container, sessionName, input string) error {
+	// Send the text literally (no key-name interpretation).
 	_, err := l.Executor.Exec(ctx, container,
-		"tmux", "send-keys", "-t", sessionName, input, "Enter",
+		"tmux", "send-keys", "-l", "-t", sessionName, input,
 	)
 	if err != nil {
 		return fmt.Errorf("send-keys to %s: %w", sessionName, err)
+	}
+	// Press Enter separately (not literal).
+	_, err = l.Executor.Exec(ctx, container,
+		"tmux", "send-keys", "-t", sessionName, "Enter",
+	)
+	if err != nil {
+		return fmt.Errorf("send-keys Enter to %s: %w", sessionName, err)
 	}
 	return nil
 }

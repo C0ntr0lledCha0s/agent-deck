@@ -1,9 +1,10 @@
 package web
 
 import (
-	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -117,6 +118,11 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 				task.TmuxSession = sessionName
 				task.Status = hub.TaskStatusThinking
 				_ = s.hubTasks.Save(task) // Update with session info.
+			} else {
+				slog.Warn("session_launch_failed",
+					slog.String("task", task.ID),
+					slog.String("container", container),
+					slog.String("error", launchErr.Error()))
 			}
 		}
 	}
@@ -180,7 +186,7 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 			return
 		}
-		s.handleTaskHealth(w, taskID)
+		s.handleTaskHealth(w, r, taskID)
 	case "preview":
 		if r.Method != http.MethodGet {
 			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
@@ -308,6 +314,11 @@ func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID 
 					Message: "input sent to session",
 				})
 				return
+			} else {
+				slog.Warn("send_input_failed",
+					slog.String("task", taskID),
+					slog.String("session", task.TmuxSession),
+					slog.String("error", sendErr.Error()))
 			}
 		}
 	}
@@ -367,7 +378,7 @@ type taskHealthResponse struct {
 }
 
 // handleTaskHealth serves GET /api/tasks/{id}/health.
-func (s *Server) handleTaskHealth(w http.ResponseWriter, taskID string) {
+func (s *Server) handleTaskHealth(w http.ResponseWriter, r *http.Request, taskID string) {
 	if s.hubTasks == nil {
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
 		return
@@ -397,7 +408,7 @@ func (s *Server) handleTaskHealth(w http.ResponseWriter, taskID string) {
 		return
 	}
 
-	healthy := s.containerExec.IsHealthy(context.Background(), container)
+	healthy := s.containerExec.IsHealthy(r.Context(), container)
 	resp := taskHealthResponse{
 		Healthy:   healthy,
 		Container: container,
@@ -466,21 +477,29 @@ func (s *Server) handleTaskPreview(w http.ResponseWriter, r *http.Request, taskI
 	logFile := fmt.Sprintf("/tmp/%s.log", task.TmuxSession)
 	ctx := r.Context()
 
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
+	pollTicker := time.NewTicker(1 * time.Second)
+	defer pollTicker.Stop()
 
-	var lastLen int
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	var lastHash [32]byte
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-heartbeatTicker.C:
+			if err := writeSSEComment(w, flusher, "keepalive"); err != nil {
+				return
+			}
+		case <-pollTicker.C:
 			output, execErr := s.containerExec.Exec(ctx, container, "tail", "-n", "50", logFile)
 			if execErr != nil {
 				continue
 			}
-			if len(output) != lastLen {
-				lastLen = len(output)
+			currentHash := sha256.Sum256([]byte(output))
+			if currentHash != lastHash {
+				lastHash = currentHash
 				if writeErr := writeSSEEvent(w, flusher, "preview", map[string]string{
 					"taskId": taskID,
 					"output": output,

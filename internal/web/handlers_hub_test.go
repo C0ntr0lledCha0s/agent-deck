@@ -1075,3 +1075,84 @@ func TestTaskInputSendsToContainer(t *testing.T) {
 		t.Fatalf("expected 'delivered' status, got: %s", rr.Body.String())
 	}
 }
+
+func TestTaskPreviewNoSession(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusIdle,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/preview", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskPreviewNoContainer(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	srv.containerExec = &testExecutor{healthy: true}
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+		TmuxSession: "agent-t-001",
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// No projects.yaml — no container configured.
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/preview", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskPreviewNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/t-nonexistent/preview", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNotFound, rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskPreviewMethodNotAllowed(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/preview", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected %d, got %d: %s", http.StatusMethodNotAllowed, rr.Code, rr.Body.String())
+	}
+}
