@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestScannerHandlesLargeMessages(t *testing.T) {
@@ -84,4 +85,27 @@ func TestBroadcastResponsesClosesClientsOnFailure(t *testing.T) {
 	if count != 0 {
 		t.Errorf("Expected 0 clients after failure, got %d", count)
 	}
+}
+
+func TestClientConnectionIdleTimeout(t *testing.T) {
+	// Verify that setting a read deadline on a connection causes
+	// the scanner to exit after the deadline passes
+	server, client := net.Pipe()
+	defer client.Close()
+
+	// Set a very short deadline
+	server.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+
+	scanner := bufio.NewScanner(server)
+	start := time.Now()
+	scanned := scanner.Scan()
+	elapsed := time.Since(start)
+
+	if scanned {
+		t.Error("Expected scanner to return false on timeout")
+	}
+	if elapsed < 40*time.Millisecond {
+		t.Errorf("Expected timeout after ~50ms, got %v", elapsed)
+	}
+	server.Close()
 }
