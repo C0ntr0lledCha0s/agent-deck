@@ -82,6 +82,32 @@ The web dashboard (`internal/web`) runs on port 8420:
 - Tests should use `defer Kill()` on any tmux sessions they create for cleanup
 - Test session cleanup in `TestMain` only matches specific known test artifacts — never use broad patterns that could kill real user sessions
 
+## Verifying Visual Elements (Web UI)
+
+When verifying visual changes or testing web UI on a build:
+
+```bash
+# 1. Build the binary
+make build
+
+# 2. Start TUI + web server (default: 127.0.0.1:8420)
+./build/agent-deck web
+
+# 3. Open in browser
+#    Dashboard:        http://127.0.0.1:8420
+#    Session view:     http://127.0.0.1:8420/s/<session-id>
+#    Terminal view:    http://127.0.0.1:8420/terminal
+#    Health check:     http://127.0.0.1:8420/healthz
+
+# Custom listen address:
+./build/agent-deck web --listen 127.0.0.1:9000
+
+# Read-only mode (disables input):
+./build/agent-deck web --read-only
+```
+
+**Note:** The `web` subcommand starts the TUI alongside the web server — both run together. A running tmux server is required for sessions to appear. Static assets (HTML, CSS, JS) are embedded in the binary at build time via `//go:embed` in `internal/web/static_files.go`, so changes to files under `internal/web/static/` require a rebuild to take effect.
+
 ## Git Hooks (lefthook)
 
 - **pre-commit**: `gofmt` check + `go vet` (parallel)
