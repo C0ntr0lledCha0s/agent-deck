@@ -48,8 +48,10 @@ type Server struct {
 	menuSubscribers   map[chan struct{}]struct{}
 
 	// Hub dashboard state.
-	hubTasks    *hub.TaskStore
-	hubProjects *hub.ProjectRegistry
+	hubTasks        *hub.TaskStore
+	hubProjects     *hub.ProjectRegistry
+	containerExec   hub.ContainerExecutor
+	sessionLauncher *hub.SessionLauncher
 
 	taskSubscribersMu sync.Mutex
 	taskSubscribers   map[chan struct{}]struct{}
@@ -86,6 +88,11 @@ func NewServer(cfg Config) *Server {
 		}
 		s.hubProjects = hub.NewProjectRegistry(hubDir)
 	}
+
+	// Initialize container executor for Docker-based task execution.
+	s.containerExec = &hub.DockerExecutor{}
+	s.sessionLauncher = &hub.SessionLauncher{Executor: s.containerExec}
+
 	if pushSvc, err := newPushService(cfg, menuData); err != nil {
 		webLog.Warn("push_disabled", slog.String("error", err.Error()))
 	} else {

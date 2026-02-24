@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,20 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
 )
+
+type testExecutor struct {
+	healthy    bool
+	execOutput string
+	execErr    error
+}
+
+func (e *testExecutor) IsHealthy(_ context.Context, _ string) bool {
+	return e.healthy
+}
+
+func (e *testExecutor) Exec(_ context.Context, _ string, _ ...string) (string, error) {
+	return e.execOutput, e.execErr
+}
 
 func newTestServerWithHub(t *testing.T) *Server {
 	t.Helper()
@@ -910,5 +925,234 @@ func TestRouteEndpointInvalidJSON(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskHealthCheckHealthy(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	srv.containerExec = &testExecutor{healthy: true}
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Write projects.yaml with container field.
+	hubDir := filepath.Dir(srv.hubProjects.FilePath())
+	yaml := `projects:
+  - name: api-service
+    path: /home/user/code/api
+    keywords: [api]
+    container: sandbox-api
+`
+	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write projects.yaml: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/health", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"healthy":true`) {
+		t.Fatalf("expected healthy:true, got: %s", rr.Body.String())
+	}
+}
+
+func TestCreateTaskLaunchesSession(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	exec := &testExecutor{healthy: true, execOutput: ""}
+	srv.containerExec = exec
+	srv.sessionLauncher = &hub.SessionLauncher{Executor: exec}
+
+	// Write projects.yaml with container field.
+	hubDir := filepath.Dir(srv.hubProjects.FilePath())
+	yaml := `projects:
+  - name: api-service
+    path: /home/user/code/api
+    keywords: [api]
+    container: sandbox-api
+`
+	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write projects.yaml: %v", err)
+	}
+
+	body := `{"project":"api-service","description":"Fix auth bug"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.TmuxSession == "" {
+		t.Fatal("expected tmuxSession to be set when container is available")
+	}
+	if resp.Task.Status != hub.TaskStatusThinking {
+		t.Fatalf("expected status thinking after launch, got %s", resp.Task.Status)
+	}
+}
+
+func TestTaskHealthCheckNoContainer(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	srv.containerExec = &testExecutor{healthy: false}
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// No projects.yaml — project has no container configured.
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/health", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"healthy":false`) {
+		t.Fatalf("expected healthy:false, got: %s", rr.Body.String())
+	}
+}
+
+func TestTaskInputSendsToContainer(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	exec := &testExecutor{healthy: true, execOutput: ""}
+	srv.containerExec = exec
+	srv.sessionLauncher = &hub.SessionLauncher{Executor: exec}
+
+	// Write projects.yaml with container.
+	hubDir := filepath.Dir(srv.hubProjects.FilePath())
+	yaml := `projects:
+  - name: api-service
+    path: /home/user/code/api
+    keywords: [api]
+    container: sandbox-api
+`
+	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write projects.yaml: %v", err)
+	}
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusWaiting,
+		TmuxSession: "agent-t-001",
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"input":"Use JWT tokens"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/input", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"delivered"`) {
+		t.Fatalf("expected 'delivered' status, got: %s", rr.Body.String())
+	}
+}
+
+func TestTaskPreviewNoSession(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusIdle,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/preview", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskPreviewNoContainer(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	srv.containerExec = &testExecutor{healthy: true}
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+		TmuxSession: "agent-t-001",
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// No projects.yaml — no container configured.
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/preview", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskPreviewNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/t-nonexistent/preview", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNotFound, rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskPreviewMethodNotAllowed(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/preview", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected %d, got %d: %s", http.StatusMethodNotAllowed, rr.Code, rr.Body.String())
 	}
 }

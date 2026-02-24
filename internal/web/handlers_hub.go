@@ -1,9 +1,13 @@
 package web
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
 )
@@ -105,6 +109,24 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Attempt to launch tmux session if container is configured.
+	if s.sessionLauncher != nil {
+		container := s.containerForProject(task.Project)
+		if container != "" {
+			sessionName, launchErr := s.sessionLauncher.Launch(r.Context(), container, task.ID)
+			if launchErr == nil {
+				task.TmuxSession = sessionName
+				task.Status = hub.TaskStatusThinking
+				_ = s.hubTasks.Save(task) // Update with session info.
+			} else {
+				slog.Warn("session_launch_failed",
+					slog.String("task", task.ID),
+					slog.String("container", container),
+					slog.String("error", launchErr.Error()))
+			}
+		}
+	}
+
 	s.notifyTaskChanged()
 	writeJSON(w, http.StatusCreated, taskDetailResponse{Task: task})
 }
@@ -159,6 +181,18 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleTaskFork(w, r, taskID)
+	case "health":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleTaskHealth(w, r, taskID)
+	case "preview":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleTaskPreview(w, r, taskID)
 	default:
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
 	}
@@ -247,14 +281,14 @@ func (s *Server) handleTaskDelete(w http.ResponseWriter, taskID string) {
 }
 
 // handleTaskInput serves POST /api/tasks/{id}/input.
-// Stub: accepts input, returns queued status. Phase 4 will wire this to docker exec tmux send-keys.
 func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID string) {
 	if s.hubTasks == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
 		return
 	}
 
-	if _, err := s.hubTasks.Get(taskID); err != nil {
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
 		return
 	}
@@ -270,7 +304,26 @@ func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID 
 		return
 	}
 
-	// TODO: Phase 4 — send input to container tmux session via docker exec.
+	// Attempt to deliver input to container tmux session.
+	if s.sessionLauncher != nil && task.TmuxSession != "" {
+		container := s.containerForProject(task.Project)
+		if container != "" {
+			if sendErr := s.sessionLauncher.SendInput(r.Context(), container, task.TmuxSession, req.Input); sendErr == nil {
+				writeJSON(w, http.StatusOK, taskInputResponse{
+					Status:  "delivered",
+					Message: "input sent to session",
+				})
+				return
+			} else {
+				slog.Warn("send_input_failed",
+					slog.String("task", taskID),
+					slog.String("session", task.TmuxSession),
+					slog.String("error", sendErr.Error()))
+			}
+		}
+	}
+
+	// Fallback: no container/session available.
 	writeJSON(w, http.StatusOK, taskInputResponse{
 		Status:  "queued",
 		Message: "input accepted (session not connected)",
@@ -316,6 +369,146 @@ func (s *Server) handleTaskFork(w http.ResponseWriter, r *http.Request, taskID s
 
 	s.notifyTaskChanged()
 	writeJSON(w, http.StatusCreated, taskDetailResponse{Task: child})
+}
+
+type taskHealthResponse struct {
+	Healthy   bool   `json:"healthy"`
+	Container string `json:"container,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+// handleTaskHealth serves GET /api/tasks/{id}/health.
+func (s *Server) handleTaskHealth(w http.ResponseWriter, r *http.Request, taskID string) {
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	container := s.containerForProject(task.Project)
+	if container == "" {
+		writeJSON(w, http.StatusOK, taskHealthResponse{
+			Healthy: false,
+			Message: "no container configured for project",
+		})
+		return
+	}
+
+	if s.containerExec == nil {
+		writeJSON(w, http.StatusOK, taskHealthResponse{
+			Healthy:   false,
+			Container: container,
+			Message:   "container executor not configured",
+		})
+		return
+	}
+
+	healthy := s.containerExec.IsHealthy(r.Context(), container)
+	resp := taskHealthResponse{
+		Healthy:   healthy,
+		Container: container,
+	}
+	if !healthy {
+		resp.Message = "container not running"
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// containerForProject looks up the container name for a project from the registry.
+func (s *Server) containerForProject(projectName string) string {
+	if s.hubProjects == nil {
+		return ""
+	}
+	projects, err := s.hubProjects.List()
+	if err != nil {
+		return ""
+	}
+	for _, p := range projects {
+		if p.Name == projectName {
+			return p.Container
+		}
+	}
+	return ""
+}
+
+// handleTaskPreview serves GET /api/tasks/{id}/preview as an SSE stream.
+// Streams tmux output from the container's pipe-pane log file.
+func (s *Server) handleTaskPreview(w http.ResponseWriter, r *http.Request, taskID string) {
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	if task.TmuxSession == "" || s.containerExec == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "no active session")
+		return
+	}
+
+	container := s.containerForProject(task.Project)
+	if container == "" {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "no container configured")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	logFile := fmt.Sprintf("/tmp/%s.log", task.TmuxSession)
+	ctx := r.Context()
+
+	pollTicker := time.NewTicker(1 * time.Second)
+	defer pollTicker.Stop()
+
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	var lastHash [32]byte
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeatTicker.C:
+			if err := writeSSEComment(w, flusher, "keepalive"); err != nil {
+				return
+			}
+		case <-pollTicker.C:
+			output, execErr := s.containerExec.Exec(ctx, container, "tail", "-n", "50", logFile)
+			if execErr != nil {
+				continue
+			}
+			currentHash := sha256.Sum256([]byte(output))
+			if currentHash != lastHash {
+				lastHash = currentHash
+				if writeErr := writeSSEEvent(w, flusher, "preview", map[string]string{
+					"taskId": taskID,
+					"output": output,
+				}); writeErr != nil {
+					return
+				}
+			}
+		}
+	}
 }
 
 // handleProjects serves GET /api/projects.

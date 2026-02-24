@@ -28,7 +28,7 @@ const (
 type Task struct {
 	ID           string     `json:"id"`
 	SessionID    string     `json:"sessionId"`
-	TmuxSession  string     `json:"tmuxSession"`
+	TmuxSession  string     `json:"tmuxSession,omitempty"`
 	Status       TaskStatus `json:"status"`
 	Project      string     `json:"project"`
 	Description  string     `json:"description"`
