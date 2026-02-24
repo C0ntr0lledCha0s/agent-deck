@@ -267,14 +267,14 @@ func (s *Server) handleTaskDelete(w http.ResponseWriter, taskID string) {
 }
 
 // handleTaskInput serves POST /api/tasks/{id}/input.
-// Stub: accepts input, returns queued status. Phase 4 will wire this to docker exec tmux send-keys.
 func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID string) {
 	if s.hubTasks == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
 		return
 	}
 
-	if _, err := s.hubTasks.Get(taskID); err != nil {
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
 		return
 	}
@@ -290,7 +290,21 @@ func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID 
 		return
 	}
 
-	// TODO: Phase 4 — send input to container tmux session via docker exec.
+	// Attempt to deliver input to container tmux session.
+	if s.sessionLauncher != nil && task.TmuxSession != "" {
+		container := s.containerForProject(task.Project)
+		if container != "" {
+			if sendErr := s.sessionLauncher.SendInput(r.Context(), container, task.TmuxSession, req.Input); sendErr == nil {
+				writeJSON(w, http.StatusOK, taskInputResponse{
+					Status:  "delivered",
+					Message: "input sent to session",
+				})
+				return
+			}
+		}
+	}
+
+	// Fallback: no container/session available.
 	writeJSON(w, http.StatusOK, taskInputResponse{
 		Status:  "queued",
 		Message: "input accepted (session not connected)",
