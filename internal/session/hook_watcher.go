@@ -191,7 +191,9 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	}
 
 	w.mu.Lock()
-	w.statuses[instanceID] = hookStatus
+	if w.statuses != nil {
+		w.statuses[instanceID] = hookStatus
+	}
 	w.mu.Unlock()
 
 	hookLog.Debug("hook_status_updated",

@@ -27,6 +27,7 @@ type StatusEventWatcher struct {
 	filterInstanceID string // optional: only deliver events for this instance
 	ctx              context.Context
 	cancel           context.CancelFunc
+	stopOnce         sync.Once
 }
 
 // NewStatusEventWatcher creates a watcher for the events directory.
@@ -128,10 +129,13 @@ func (w *StatusEventWatcher) Start() {
 }
 
 // Stop shuts down the watcher and closes the event channel.
+// Safe to call multiple times.
 func (w *StatusEventWatcher) Stop() {
-	w.cancel()
-	_ = w.watcher.Close()
-	close(w.eventCh)
+	w.stopOnce.Do(func() {
+		w.cancel()
+		_ = w.watcher.Close()
+		close(w.eventCh)
+	})
 }
 
 // EventCh returns the channel that delivers parsed status events.
@@ -177,6 +181,13 @@ func (w *StatusEventWatcher) processEventFile(filePath string) {
 	// Apply instance filter (belt-and-suspenders with the filename check above)
 	if w.filterInstanceID != "" && event.InstanceID != w.filterInstanceID {
 		return
+	}
+
+	// Check if stopped before sending (debounce timer may fire after Stop)
+	select {
+	case <-w.ctx.Done():
+		return
+	default:
 	}
 
 	// Non-blocking send: if channel is full, drop the event
