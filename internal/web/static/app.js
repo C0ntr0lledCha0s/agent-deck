@@ -20,7 +20,7 @@
     wsReconnectEnabled: false,
     reconnectTimer: null,
     reconnectAttempt: 0,
-    menuEvents: null,
+    menuEventsWs: null,
     terminalEvents: [],
     terminalAttached: false,
     terminalUI: null,
@@ -487,43 +487,70 @@
   }
 
   function connectMenuEvents() {
-    if (typeof window.EventSource !== "function") {
-      return
-    }
-    if (state.menuEvents) {
+    if (state.menuEventsWs) {
       return
     }
 
-    const source = new window.EventSource(apiPathWithToken("/events/menu"))
-    state.menuEvents = source
+    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:"
+    let wsUrl = `${wsProto}//${window.location.host}/ws/events`
+    if (state.authToken) {
+      wsUrl += `?token=${encodeURIComponent(state.authToken)}`
+    }
 
-    source.addEventListener("menu", (event) => {
-      let snapshot
+    const ws = new WebSocket(wsUrl)
+    state.menuEventsWs = ws
+
+    ws.addEventListener("open", () => {
+      ws.send(JSON.stringify({ type: "subscribe", channels: ["sessions"] }))
+    })
+
+    ws.addEventListener("message", (event) => {
+      let msg
       try {
-        snapshot = JSON.parse(event.data)
+        msg = JSON.parse(event.data)
       } catch (_err) {
         return
       }
-      if (!snapshot || !Array.isArray(snapshot.items)) {
-        return
+      if (msg.type === "session.updated") {
+        refreshMenu()
       }
-      state.snapshot = snapshot
-      reconcileGroupExpansionState(snapshot)
-      renderMenu()
     })
 
-    source.addEventListener("error", () => {
-      // EventSource handles reconnection internally.
-      // We only close and recreate on fatal auth/load errors via page reload.
+    ws.addEventListener("close", () => {
+      state.menuEventsWs = null
+      setTimeout(connectMenuEvents, 5000)
+    })
+
+    ws.addEventListener("error", () => {
+      // close event will fire after error, triggering reconnect
     })
   }
 
   function disconnectMenuEvents() {
-    if (!state.menuEvents) {
+    if (!state.menuEventsWs) {
       return
     }
-    state.menuEvents.close()
-    state.menuEvents = null
+    state.menuEventsWs.close()
+    state.menuEventsWs = null
+  }
+
+  async function refreshMenu() {
+    try {
+      const headers = { Accept: "application/json" }
+      if (state.authToken) {
+        headers.Authorization = `Bearer ${state.authToken}`
+      }
+      const response = await fetch(apiPathWithToken("/api/menu"), {
+        method: "GET",
+        headers,
+      })
+      if (!response.ok) return
+      state.snapshot = await response.json()
+      reconcileGroupExpansionState(state.snapshot)
+      renderMenu()
+    } catch (_err) {
+      // ignore — will retry on next event
+    }
   }
 
   function connectionLabel(phase) {

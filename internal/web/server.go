@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/eventbus"
@@ -45,17 +44,11 @@ type Server struct {
 	cancelBase  context.CancelFunc
 	hookWatcher *session.StatusFileWatcher
 
-	menuSubscribersMu sync.Mutex
-	menuSubscribers   map[chan struct{}]struct{}
-
 	// Hub dashboard state.
 	hubTasks        *hub.TaskStore
 	hubProjects     *hub.ProjectStore
 	containerExec   hub.ContainerExecutor
 	sessionLauncher *hub.SessionLauncher
-
-	taskSubscribersMu sync.Mutex
-	taskSubscribers   map[chan struct{}]struct{}
 
 	eventBus *eventbus.EventBus
 	eventHub *eventbus.Hub
@@ -73,10 +66,8 @@ func NewServer(cfg Config) *Server {
 	}
 
 	s := &Server{
-		cfg:             cfg,
-		menuData:        menuData,
-		menuSubscribers: make(map[chan struct{}]struct{}),
-		taskSubscribers: make(map[chan struct{}]struct{}),
+		cfg:      cfg,
+		menuData: menuData,
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	s.eventBus = eventbus.New()
@@ -204,7 +195,7 @@ func (s *Server) Start() error {
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.cancelBase != nil {
-		// Signal long-lived handlers (SSE/WS) to stop promptly.
+		// Signal long-lived handlers (WS) to stop promptly.
 		s.cancelBase()
 	}
 	if s.eventHub != nil {
@@ -251,70 +242,14 @@ func (s *Server) String() string {
 	return fmt.Sprintf("web-server(addr=%s, profile=%s, readOnly=%t)", s.cfg.ListenAddr, s.cfg.Profile, s.cfg.ReadOnly)
 }
 
-func (s *Server) subscribeMenuChanges() chan struct{} {
-	ch := make(chan struct{}, 1)
-	s.menuSubscribersMu.Lock()
-	s.menuSubscribers[ch] = struct{}{}
-	s.menuSubscribersMu.Unlock()
-	return ch
-}
-
-func (s *Server) unsubscribeMenuChanges(ch chan struct{}) {
-	if ch == nil {
-		return
-	}
-	s.menuSubscribersMu.Lock()
-	if _, ok := s.menuSubscribers[ch]; ok {
-		delete(s.menuSubscribers, ch)
-		close(ch)
-	}
-	s.menuSubscribersMu.Unlock()
-}
-
 func (s *Server) notifyMenuChanged() {
-	s.menuSubscribersMu.Lock()
-	for ch := range s.menuSubscribers {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-	s.menuSubscribersMu.Unlock()
 	if s.eventBus != nil {
 		s.eventBus.Emit(eventbus.Event{Type: eventbus.EventSessionUpdated, Channel: "sessions"})
 	}
 }
 
-func (s *Server) subscribeTaskChanges() chan struct{} {
-	ch := make(chan struct{}, 1)
-	s.taskSubscribersMu.Lock()
-	s.taskSubscribers[ch] = struct{}{}
-	s.taskSubscribersMu.Unlock()
-	return ch
-}
-
-func (s *Server) unsubscribeTaskChanges(ch chan struct{}) {
-	if ch == nil {
-		return
-	}
-	s.taskSubscribersMu.Lock()
-	if _, ok := s.taskSubscribers[ch]; ok {
-		delete(s.taskSubscribers, ch)
-		close(ch)
-	}
-	s.taskSubscribersMu.Unlock()
-}
-
-// notifyTaskChanged broadcasts to SSE subscribers that task data changed.
+// notifyTaskChanged emits a task-updated event through the EventBus.
 func (s *Server) notifyTaskChanged() {
-	s.taskSubscribersMu.Lock()
-	for ch := range s.taskSubscribers {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-	s.taskSubscribersMu.Unlock()
 	if s.eventBus != nil {
 		s.eventBus.Emit(eventbus.Event{Type: eventbus.EventTaskUpdated, Channel: "tasks"})
 	}

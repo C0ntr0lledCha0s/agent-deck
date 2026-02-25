@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/eventbus"
 )
 
 func TestHealthzEndpoint(t *testing.T) {
@@ -190,27 +192,50 @@ func TestServiceWorkerServed(t *testing.T) {
 	}
 }
 
-func TestMenuChangeBroadcastNotifiesAllSubscribers(t *testing.T) {
+func TestNotifyMenuChangedEmitsEvent(t *testing.T) {
 	srv := NewServer(Config{
 		ListenAddr: "127.0.0.1:0",
 	})
 
-	subA := srv.subscribeMenuChanges()
-	subB := srv.subscribeMenuChanges()
-	defer srv.unsubscribeMenuChanges(subA)
-	defer srv.unsubscribeMenuChanges(subB)
+	ch := make(chan struct{}, 1)
+	srv.eventBus.Subscribe(func(e eventbus.Event) {
+		if e.Type == eventbus.EventSessionUpdated {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
+		}
+	})
 
 	srv.notifyMenuChanged()
 
 	select {
-	case <-subA:
+	case <-ch:
 	case <-time.After(250 * time.Millisecond):
-		t.Fatal("expected subscriber A to receive menu change signal")
+		t.Fatal("expected EventBus to receive session updated event")
 	}
+}
+
+func TestNotifyTaskChangedEmitsEvent(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+	})
+
+	ch := make(chan struct{}, 1)
+	srv.eventBus.Subscribe(func(e eventbus.Event) {
+		if e.Type == eventbus.EventTaskUpdated {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	srv.notifyTaskChanged()
 
 	select {
-	case <-subB:
+	case <-ch:
 	case <-time.After(250 * time.Millisecond):
-		t.Fatal("expected subscriber B to receive menu change signal")
+		t.Fatal("expected EventBus to receive task updated event")
 	}
 }

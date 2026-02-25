@@ -9,7 +9,6 @@
     activeView: "agents",
     projectFilter: "",
     authToken: readAuthTokenFromURL(),
-    menuEvents: null,
     terminal: null,
     terminalWs: null,
     fitAddon: null,
@@ -112,57 +111,6 @@
       if (state.tasks[i].id === id) return state.tasks[i]
     }
     return null
-  }
-
-  // ── SSE (deprecated — kept for backward compat until Task 13) ────
-  // @deprecated Use ConnectionManager instead. Will be removed in a future release.
-  function connectSSE() {
-    if (state.menuEvents) {
-      state.menuEvents.close()
-      state.menuEvents = null
-    }
-
-    setConnectionState("connecting")
-    var url = apiPathWithToken("/events/menu")
-    var es = new EventSource(url)
-    state.menuEvents = es
-
-    es.addEventListener("menu", function () {
-      setConnectionState("connected")
-      fetchTasks()
-    })
-
-    es.addEventListener("tasks", function (e) {
-      try {
-        var data = JSON.parse(e.data)
-        state.tasks = data.tasks || []
-        renderTaskList()
-        updateAgentCount()
-        if (state.selectedTaskId) {
-          var task = findTask(state.selectedTaskId)
-          if (task) {
-            renderRightPanel(task)
-            renderChatBar()
-            renderAskBanner()
-          }
-        }
-      } catch (err) {
-        console.error("tasks SSE parse error:", err)
-      }
-    })
-
-    es.onopen = function () {
-      setConnectionState("connected")
-    }
-
-    es.onerror = function () {
-      if (es.readyState === EventSource.CLOSED) {
-        setConnectionState("closed")
-        setTimeout(connectSSE, 5000)
-      } else {
-        setConnectionState("reconnecting")
-      }
-    }
   }
 
   function setConnectionState(s) {
@@ -1901,9 +1849,6 @@
   renderChatBar()
   fetchTasks()
   fetchProjects()
-
-  // Legacy SSE — kept until Task 13 removes it
-  connectSSE()
 
   // ── ConnectionManager (WebSocket-based event bus) ───────────────
   ;(function initConnectionManager() {

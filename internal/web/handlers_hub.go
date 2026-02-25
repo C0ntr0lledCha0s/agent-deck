@@ -719,13 +719,9 @@ func (s *Server) handleProjectDelete(w http.ResponseWriter, name string) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Response types for hub API endpoints and SSE events.
+// Response types for hub API endpoints.
 
 type tasksListResponse struct {
-	Tasks []*hub.Task `json:"tasks"`
-}
-
-type tasksSSEPayload struct {
 	Tasks []*hub.Task `json:"tasks"`
 }
 
