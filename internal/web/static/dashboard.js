@@ -890,8 +890,9 @@
 
     clearChildren(filterBar)
 
-    // "All" pill
-    var allPill = el("button", "filter-pill" + (state.projectFilter === "" ? " filter-pill--active" : ""), "All")
+    // "All" pill with task count
+    var allLabel = "All (" + state.tasks.length + ")"
+    var allPill = el("button", "filter-pill" + (state.projectFilter === "" ? " filter-pill--active" : ""), allLabel)
     allPill.dataset.project = ""
     allPill.addEventListener("click", handleFilterClick)
     filterBar.appendChild(allPill)
@@ -959,8 +960,7 @@
     // Active section
     if (active.length > 0) {
       var activeHeader = el("div", "task-section-header")
-      activeHeader.appendChild(el("span", null, "Active"))
-      activeHeader.appendChild(el("span", "task-section-count", active.length.toString()))
+      activeHeader.appendChild(el("span", null, "Active \u00B7 " + active.length))
       taskList.appendChild(activeHeader)
 
       for (var a = 0; a < active.length; a++) {
@@ -971,8 +971,7 @@
     // Completed section
     if (completed.length > 0) {
       var completedHeader = el("div", "task-section-header")
-      completedHeader.appendChild(el("span", null, "Completed"))
-      completedHeader.appendChild(el("span", "task-section-count", completed.length.toString()))
+      completedHeader.appendChild(el("span", null, "Completed \u00B7 " + completed.length))
       taskList.appendChild(completedHeader)
 
       for (var c = 0; c < completed.length; c++) {
@@ -993,10 +992,21 @@
     var borderColor = getCardBorderColor(task)
     card.style.borderLeftColor = borderColor
 
-    // Top row: project name + task id
+    // Top row: project name (left) + INPUT badge + agent status (right)
     var top = el("div", "agent-card-top")
     top.appendChild(el("span", "agent-card-project", task.project || "\u2014"))
-    top.appendChild(el("span", "agent-card-id", task.id))
+    var topRight = el("div", "agent-card-footer")
+    topRight.style.gap = "6px"
+    if (task.agentStatus === "waiting" && task.askQuestion) {
+      topRight.appendChild(el("span", "ask-badge", "\u25D0 INPUT"))
+    }
+    var liveSession = getActiveSessionForTask(task)
+    if (liveSession) {
+      topRight.appendChild(createAgentStatusBadge(mapSessionStatus(liveSession.status)))
+    } else {
+      topRight.appendChild(createAgentStatusBadge(task.agentStatus))
+    }
+    top.appendChild(topRight)
     card.appendChild(top)
 
     // Description
@@ -1004,32 +1014,13 @@
       card.appendChild(el("div", "agent-card-desc", task.description))
     }
 
-    // Footer row 1: status badge + INPUT badge
+    // Footer: task ID + time (left) | mini session chain bars (right)
     var footer = el("div", "agent-card-footer")
-    var liveSession = getActiveSessionForTask(task)
-    if (liveSession) {
-      footer.appendChild(createAgentStatusBadge(mapSessionStatus(liveSession.status)))
-    } else {
-      footer.appendChild(createAgentStatusBadge(task.agentStatus))
-    }
-
-    // Ask badge if waiting with question
-    if (task.agentStatus === "waiting" && task.askQuestion) {
-      var askBadge = el("span", "ask-badge", "\u25D0 INPUT")
-      leftBadges.appendChild(askBadge)
-    }
-
-    leftBadges.appendChild(createAgentStatusBadge(task.agentStatus))
-    footer.appendChild(leftBadges)
-    card.appendChild(footer)
-
-    // Footer row 2: task ID + time | mini session chain bars
-    var footer2 = el("div", "agent-card-footer")
-    footer2.style.justifyContent = "space-between"
+    footer.style.justifyContent = "space-between"
     var idTime = el("span", "agent-card-time", task.id + " \u00B7 " + (task.time || formatDuration(task.createdAt)))
-    footer2.appendChild(idTime)
-    footer2.appendChild(createMiniSessionChain(task))
-    card.appendChild(footer2)
+    footer.appendChild(idTime)
+    footer.appendChild(createMiniSessionChain(task))
+    card.appendChild(footer)
 
     // Click handler
     card.addEventListener("click", function () {
@@ -1060,21 +1051,13 @@
   function createMiniSessionChain(task) {
     var chain = el("div", "mini-session-chain")
 
-    // Use sessions array if available, otherwise fall back to phase
+    // Only show mini bars when task has actual sessions
     var segments = []
     if (task.sessions && task.sessions.length > 0) {
       for (var i = 0; i < task.sessions.length; i++) {
         segments.push({
           phase: task.sessions[i].phase,
           status: task.sessions[i].status,
-        })
-      }
-    } else if (task.phase) {
-      var currentIdx = PHASES.indexOf(task.phase)
-      for (var j = 0; j < PHASES.length; j++) {
-        segments.push({
-          phase: PHASES[j],
-          status: j < currentIdx ? "complete" : (j === currentIdx ? "active" : "pending"),
         })
       }
     }
@@ -1165,7 +1148,7 @@
     backBtn.addEventListener("click", handleMobileBack)
     top.appendChild(backBtn)
 
-    top.appendChild(el("span", "detail-title", (task.project || "\u2014") + " \u00B7 " + task.id))
+    top.appendChild(el("span", "detail-title", task.description || "\u2014"))
 
     var actions = el("div", "detail-actions")
     var detailLive = getActiveSessionForTask(task)
@@ -1178,16 +1161,22 @@
 
     header.appendChild(top)
 
-    // Meta row: description + branch
+    // Meta row: project / id + branch + tmux session + skills
     var meta = el("div", "detail-meta")
-    if (task.description) {
-      meta.appendChild(document.createTextNode(task.description))
-    }
+    meta.appendChild(el("span", null, (task.project || "\u2014") + " / " + task.id))
     if (task.branch) {
-      var sep = el("span", null, "\u00B7")
-      sep.style.color = "var(--text-dim)"
-      meta.appendChild(sep)
-      meta.appendChild(el("span", null, task.branch))
+      meta.appendChild(el("span", null, "\u2192 " + task.branch))
+    }
+    if (task.tmuxSession) {
+      var tmuxTag = el("span", null, "tmux: " + task.tmuxSession)
+      tmuxTag.style.cssText = "color: var(--text-dim); background: var(--bg-panel); padding: 1px 6px; border-radius: 2px; font-size: 0.5rem;"
+      meta.appendChild(tmuxTag)
+    }
+    var skills = task.skills || []
+    for (var sk = 0; sk < skills.length; sk++) {
+      var skillTag = el("span", null, skills[sk])
+      skillTag.style.cssText = "color: var(--purple); background: rgba(139,140,248,0.08); padding: 1px 6px; border-radius: 2px; font-size: 0.56rem;"
+      meta.appendChild(skillTag)
     }
     header.appendChild(meta)
   }
@@ -1229,26 +1218,47 @@
     }
 
     for (var k = 0; k < phases.length; k++) {
+      var phaseColor = PHASE_COLORS_HEX[phases[k].label] || "#4a5368"
+
       // Connector
       if (k > 0) {
-        var connClass = "session-chain-connector"
-        if (phases[k - 1].status === "done") connClass += " done"
-        container.appendChild(el("div", connClass))
+        var conn = el("div", "session-chain-connector")
+        if (phases[k - 1].status === "done") {
+          conn.style.background = "rgba(45, 212, 160, 0.38)"
+        }
+        container.appendChild(conn)
       }
 
       // Pip
       var pip = el("div", "session-chain-pip")
 
-      var dotClass = "session-chain-dot"
-      if (phases[k].status === "done") dotClass += " done"
-      else if (phases[k].status === "active") dotClass += " active"
-      pip.appendChild(el("div", dotClass, phases[k].dotLabel))
+      var dot = el("div", "session-chain-dot")
+      dot.style.borderColor = phaseColor
+      if (phases[k].status === "done") {
+        dot.style.background = phaseColor
+        dot.style.color = "var(--bg)"
+      } else if (phases[k].status === "active") {
+        dot.style.background = "transparent"
+        dot.style.color = phaseColor
+        dot.style.boxShadow = "0 0 6px " + phaseColor + "60"
+      } else {
+        dot.style.background = "transparent"
+        dot.style.color = "var(--text-dim)"
+      }
+      pip.appendChild(dot)
 
-      var lblClass = "session-chain-label"
-      if (phases[k].status === "active") lblClass += " active"
-      var lblText = phases[k].label
-      if (phases[k].duration) lblText += " " + phases[k].duration
-      pip.appendChild(el("div", lblClass, lblText))
+      var lbl = el("div", "session-chain-label")
+      lbl.style.color = phases[k].status === "active" ? phaseColor : "var(--text-dim)"
+      if (phases[k].status === "active") lbl.style.fontWeight = "600"
+      lbl.textContent = phases[k].label
+      pip.appendChild(lbl)
+
+      if (phases[k].duration) {
+        var dur = el("div", "session-chain-label")
+        dur.style.fontSize = "0.5rem"
+        dur.textContent = phases[k].duration
+        pip.appendChild(dur)
+      }
 
       container.appendChild(pip)
     }
@@ -1283,12 +1293,14 @@
     var row = el("div", "preview-header-row")
 
     var leftGroup = el("div", null)
+    leftGroup.style.display = "flex"
+    leftGroup.style.alignItems = "center"
     leftGroup.appendChild(el("span", "preview-header-project", task.project || "\u2014"))
 
     var previewLive = getActiveSessionForTask(task)
     var effectiveStatus = previewLive ? mapSessionStatus(previewLive.status) : task.agentStatus
     var agentMeta = AGENT_STATUS_META[effectiveStatus] || AGENT_STATUS_META.idle
-    var statusSpan = el("span", "preview-header-status")
+    var statusSpan = el("span", "preview-header-agent-status")
     statusSpan.textContent = agentMeta.icon + " " + agentMeta.label
     statusSpan.style.color = agentMeta.color
     if (agentMeta === AGENT_STATUS_META.waiting || agentMeta === AGENT_STATUS_META.thinking) {
@@ -1564,11 +1576,12 @@
     if (state.activeView === "agents" && task && task.agentStatus !== "complete" && task.agentStatus !== "idle") {
       return {
         mode: "reply",
-        label: "\u21A9 " + task.id + "/" + task.phase,
+        label: task.id + "/" + task.phase,
         icon: "\u21A9",
         color: CHAT_MODES.reply.color,
         tmuxSession: task.tmuxSession,
         taskId: task.id,
+        sessionPhase: task.phase,
         askQuestion: task.askQuestion,
       }
     }
@@ -1576,7 +1589,7 @@
     if (state.activeView === "conductor") {
       return {
         mode: "conductor",
-        label: "\u25CE Conductor",
+        label: "Conductor",
         icon: "\u25CE",
         color: CHAT_MODES.conductor.color,
       }
@@ -1588,7 +1601,7 @@
 
     return {
       mode: "new",
-      label: project ? "+ " + project : "+ auto-route",
+      label: project || "auto-route",
       icon: "+",
       color: CHAT_MODES.new.color,
       target: project,
