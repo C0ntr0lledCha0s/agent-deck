@@ -3,6 +3,7 @@ package eventbus
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -35,7 +36,17 @@ func ParseClientMessage(raw json.RawMessage) (*ClientMessage, error) {
 // WSConn is the interface required for a WebSocket connection.
 // It is intentionally minimal to allow easy testing with mocks.
 type WSConn interface {
-	WriteJSON(v interface{}) error
+	WriteJSON(v any) error
+}
+
+// validChannels is the set of allowed subscription channel names.
+var validChannels = map[string]bool{
+	"sessions": true,
+	"tasks":    true,
+	"push":     true,
+	"uploads":  true,
+	"system":   true,
+	"session":  true, // per-session subscription (requires sessionId)
 }
 
 // subscription tracks one client subscription to a channel.
@@ -99,6 +110,12 @@ func (h *Hub) UnregisterClient(id string) {
 
 // HandleMessage processes a raw JSON message from a client.
 // It dispatches on the message type: subscribe, unsubscribe, ping.
+//
+// Safety note: the client pointer is fetched under Lock, then the lock is released
+// before calling handler methods (which re-acquire the lock). This is safe because
+// all mutations to client state go through h.mu, and the client struct outlives its
+// map entry (GC keeps it alive). A concurrent UnregisterClient would only remove the
+// map entry, not invalidate the pointer.
 func (h *Hub) HandleMessage(clientID string, raw json.RawMessage) error {
 	msg, err := ParseClientMessage(raw)
 	if err != nil {
@@ -127,6 +144,10 @@ func (h *Hub) HandleMessage(clientID string, raw json.RawMessage) error {
 // handleSubscribe creates a new subscription for the client and sends
 // back a confirmation with the subscription ID.
 func (h *Hub) handleSubscribe(c *client, msg *ClientMessage) error {
+	if !validChannels[msg.Channel] {
+		return fmt.Errorf("eventbus: unknown channel %q", msg.Channel)
+	}
+
 	h.mu.Lock()
 	h.nextSub++
 	subID := fmt.Sprintf("sub-%d", h.nextSub)
@@ -158,16 +179,16 @@ func (h *Hub) broadcast(event Event) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	for _, c := range h.clients {
+	for id, c := range h.clients {
 		if h.clientWantsEvent(c, ch, event) {
-			// Fire-and-forget: errors are silently dropped since the client
-			// will be cleaned up on the next write failure by the caller.
-			_ = c.conn.WriteJSON(&ServerMessage{
+			if err := c.conn.WriteJSON(&ServerMessage{
 				Type:      "event",
 				Channel:   ch,
 				EventType: wireEventType(event.Type),
 				Data:      event.Data,
-			})
+			}); err != nil {
+				slog.Debug("eventbus: broadcast write failed", "client", id, "error", err)
+			}
 		}
 	}
 }
