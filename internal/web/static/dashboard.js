@@ -858,7 +858,7 @@
 
   // ── Tool Renderers ──────────────────────────────────────────────
   var ToolRenderers = {
-    _renderers: {},
+    _renderers: Object.create(null),
 
     register: function (name, renderer) {
       this._renderers[name] = renderer
@@ -1488,6 +1488,7 @@
   // ── Messages tab ────────────────────────────────────────────────
   function loadSessionMessages(sessionId) {
     if (!sessionId) return
+    state.lastLoadedMessagesSession = sessionId
 
     var url = apiPathWithToken("/api/messages/" + encodeURIComponent(sessionId))
     fetch(url, { headers: authHeaders() })
@@ -1540,13 +1541,18 @@
 
       // Tool result rendering
       if (msg.toolName) {
-        var toolEl = ToolRenderers.render(
-          msg.toolName,
-          msg.toolInput || null,
-          msg.toolResult || null,
-          msg.augment || null
-        )
-        msgBlock.appendChild(toolEl)
+        try {
+          var toolEl = ToolRenderers.render(
+            msg.toolName,
+            msg.toolInput || null,
+            msg.toolResult || null,
+            msg.augment || null
+          )
+          msgBlock.appendChild(toolEl)
+        } catch (err) {
+          console.error("ToolRenderers.render failed for", msg.toolName, err)
+          msgBlock.appendChild(el("div", "tool-block", "[tool: " + msg.toolName + "]"))
+        }
       }
 
       container.appendChild(msgBlock)
@@ -1580,10 +1586,10 @@
       if (terminalContainer) terminalContainer.style.display = "none"
       if (messagesContainer) messagesContainer.style.display = ""
 
-      // Load messages for the selected task
+      // Load messages for the selected task (skip if already loaded for this session)
       if (state.selectedTaskId) {
         var task = findTask(state.selectedTaskId)
-        if (task && task.tmuxSession) {
+        if (task && task.tmuxSession && task.tmuxSession !== state.lastLoadedMessagesSession) {
           loadSessionMessages(task.tmuxSession)
         }
       }
