@@ -87,6 +87,26 @@ func (b *HubSessionBridge) StartPhase(taskID string, phase hub.Phase) (*StartPha
 	}, nil
 }
 
+// GetActiveSessionID returns the session.Instance ID for the task's currently active phase.
+func (b *HubSessionBridge) GetActiveSessionID(taskID string) (string, error) {
+	if b.tasks == nil {
+		return "", fmt.Errorf("task store not initialized")
+	}
+
+	task, err := b.tasks.Get(taskID)
+	if err != nil {
+		return "", fmt.Errorf("task %s not found: %w", taskID, err)
+	}
+
+	for _, s := range task.Sessions {
+		if s.Status == "active" {
+			return s.ClaudeSessionID, nil
+		}
+	}
+
+	return "", fmt.Errorf("no active session for task %s", taskID)
+}
+
 // TransitionPhase completes the current phase and starts the next one.
 // It marks the current active session as complete with the given summary,
 // then creates a new session for the next phase.

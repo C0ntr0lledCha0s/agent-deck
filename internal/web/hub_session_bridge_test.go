@@ -102,6 +102,46 @@ func TestTransitionPhase(t *testing.T) {
 	assert.Equal(t, hub.PhasePlan, updated.Phase)
 }
 
+func TestGetActiveSession(t *testing.T) {
+	bridge, ts, ps := newTestBridge(t)
+
+	proj := &hub.Project{Name: "api-service", Path: "/tmp/test-project", Keywords: []string{"api"}}
+	require.NoError(t, ps.Save(proj))
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseBrainstorm,
+		Status:      hub.TaskStatusRunning,
+		Sessions: []hub.Session{
+			{ID: "t-001-brainstorm", Phase: hub.PhaseBrainstorm, Status: "active", ClaudeSessionID: "sess-abc"},
+		},
+	}
+	require.NoError(t, ts.Save(task))
+
+	sessionID, err := bridge.GetActiveSessionID(task.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "sess-abc", sessionID)
+}
+
+func TestGetActiveSession_NoActive(t *testing.T) {
+	bridge, ts, _ := newTestBridge(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Done task",
+		Phase:       hub.PhaseBrainstorm,
+		Status:      hub.TaskStatusDone,
+		Sessions: []hub.Session{
+			{ID: "t-001-brainstorm", Phase: hub.PhaseBrainstorm, Status: "complete", ClaudeSessionID: "sess-abc"},
+		},
+	}
+	require.NoError(t, ts.Save(task))
+
+	_, err := bridge.GetActiveSessionID(task.ID)
+	assert.Error(t, err)
+}
+
 func TestPhasePrompt(t *testing.T) {
 	prompt := phasePrompt(hub.PhaseBrainstorm, "Fix auth bug in API service")
 	require.NotEmpty(t, prompt)

@@ -112,6 +112,23 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-start phase session via bridge (local sessions).
+	// This takes precedence over container-based launch for projects with a local path.
+	if s.hubBridge != nil {
+		if proj, projErr := s.hubProjects.Get(task.Project); projErr == nil && proj.Path != "" {
+			if _, bridgeErr := s.hubBridge.StartPhase(task.ID, phase); bridgeErr == nil {
+				// Re-read task to include session entry
+				if updated, getErr := s.hubTasks.Get(task.ID); getErr == nil {
+					task = updated
+				}
+			} else {
+				slog.Warn("bridge_start_phase_failed",
+					slog.String("task", task.ID),
+					slog.String("error", bridgeErr.Error()))
+			}
+		}
+	}
+
 	// Attempt to launch tmux session if container is configured.
 	if s.sessionLauncher != nil {
 		container := s.containerForProject(task.Project)
@@ -197,6 +214,18 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleTaskPreview(w, r, taskID)
+	case "start-phase":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleTaskStartPhase(w, r, taskID)
+	case "transition":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleTaskTransition(w, r, taskID)
 	default:
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
 	}
@@ -816,6 +845,95 @@ func isValidAgentStatus(s string) bool {
 		return true
 	}
 	return false
+}
+
+// --- Hub-Session Bridge handlers ---
+
+type startPhaseRequest struct {
+	Phase string `json:"phase"`
+}
+
+type startPhaseResponse struct {
+	SessionID string `json:"sessionId"`
+	Phase     string `json:"phase"`
+}
+
+type transitionRequest struct {
+	NextPhase string `json:"nextPhase"`
+	Summary   string `json:"summary,omitempty"`
+}
+
+// handleTaskStartPhase serves POST /api/tasks/{id}/start-phase.
+func (s *Server) handleTaskStartPhase(w http.ResponseWriter, r *http.Request, taskID string) {
+	if s.hubBridge == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub bridge not initialized")
+		return
+	}
+
+	var req startPhaseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	phase := hub.Phase(req.Phase)
+	if req.Phase == "" {
+		// Default to task's current phase
+		task, err := s.hubTasks.Get(taskID)
+		if err != nil {
+			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+			return
+		}
+		phase = task.Phase
+	} else if !isValidPhase(req.Phase) {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid phase value")
+		return
+	}
+
+	result, err := s.hubBridge.StartPhase(taskID, phase)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	s.notifyTaskChanged()
+	s.notifyMenuChanged()
+	writeJSON(w, http.StatusOK, startPhaseResponse{
+		SessionID: result.SessionID,
+		Phase:     result.Phase,
+	})
+}
+
+// handleTaskTransition serves POST /api/tasks/{id}/transition.
+func (s *Server) handleTaskTransition(w http.ResponseWriter, r *http.Request, taskID string) {
+	if s.hubBridge == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub bridge not initialized")
+		return
+	}
+
+	var req transitionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	if req.NextPhase == "" || !isValidPhase(req.NextPhase) {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid or missing nextPhase")
+		return
+	}
+
+	result, err := s.hubBridge.TransitionPhase(taskID, hub.Phase(req.NextPhase), req.Summary)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	s.notifyTaskChanged()
+	s.notifyMenuChanged()
+	writeJSON(w, http.StatusOK, startPhaseResponse{
+		SessionID: result.SessionID,
+		Phase:     result.Phase,
+	})
 }
 
 // handleRoute serves POST /api/route.
