@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/eventbus"
 	"github.com/asheshgoplani/agent-deck/internal/hub"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -55,6 +56,9 @@ type Server struct {
 
 	taskSubscribersMu sync.Mutex
 	taskSubscribers   map[chan struct{}]struct{}
+
+	eventBus *eventbus.EventBus
+	eventHub *eventbus.Hub
 }
 
 // NewServer creates a new web server with base routes and middleware.
@@ -75,6 +79,8 @@ func NewServer(cfg Config) *Server {
 		taskSubscribers: make(map[chan struct{}]struct{}),
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
+	s.eventBus = eventbus.New()
+	s.eventHub = eventbus.NewHub(s.eventBus)
 	webLog := logging.ForComponent(logging.CompWeb)
 
 	// Initialize hub task store and project registry.
@@ -138,6 +144,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/push/presence", s.handlePushPresence)
 	mux.HandleFunc("/events/menu", s.handleMenuEvents)
 	mux.HandleFunc("/ws/session/", s.handleSessionWS)
+	mux.HandleFunc("/ws/events", s.handleEventBusWS)
 
 	handler := withRecover(mux)
 
@@ -197,6 +204,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.cancelBase != nil {
 		// Signal long-lived handlers (SSE/WS) to stop promptly.
 		s.cancelBase()
+	}
+	if s.eventHub != nil {
+		s.eventHub.Close()
 	}
 	if s.hookWatcher != nil {
 		s.hookWatcher.Stop()
@@ -268,6 +278,9 @@ func (s *Server) notifyMenuChanged() {
 		}
 	}
 	s.menuSubscribersMu.Unlock()
+	if s.eventBus != nil {
+		s.eventBus.Emit(eventbus.Event{Type: eventbus.EventSessionUpdated, Channel: "sessions"})
+	}
 }
 
 func (s *Server) subscribeTaskChanges() chan struct{} {
@@ -300,4 +313,7 @@ func (s *Server) notifyTaskChanged() {
 		}
 	}
 	s.taskSubscribersMu.Unlock()
+	if s.eventBus != nil {
+		s.eventBus.Emit(eventbus.Event{Type: eventbus.EventTaskUpdated, Channel: "tasks"})
+	}
 }
