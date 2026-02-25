@@ -15,6 +15,7 @@
     fitAddon: null,
     chatMode: null,
     chatModeOverride: null,
+    sessionMap: {},  // menuSession.id → menuSession (from SSE menu events)
   }
 
   // ── Status metadata ─────────────────────────────────────────────
@@ -37,6 +38,28 @@
 
   var PHASES = ["brainstorm", "plan", "execute", "review"]
   var PHASE_DOT_LABELS = { brainstorm: "B", plan: "P", execute: "E", review: "R" }
+
+  // ── Live session helpers ────────────────────────────────────────────
+  function getActiveSessionForTask(task) {
+    if (!task.sessions) return null
+    for (var i = task.sessions.length - 1; i >= 0; i--) {
+      if (task.sessions[i].status === "active" && task.sessions[i].claudeSessionId) {
+        return state.sessionMap[task.sessions[i].claudeSessionId] || null
+      }
+    }
+    return null
+  }
+
+  function mapSessionStatus(sessionStatus) {
+    switch (sessionStatus) {
+      case "running": return "running"
+      case "waiting": return "waiting"
+      case "idle":    return "idle"
+      case "error":   return "error"
+      case "starting": return "thinking"
+      default:        return "idle"
+    }
+  }
 
   // ── Auth ──────────────────────────────────────────────────────────
   function readAuthTokenFromURL() {
@@ -126,8 +149,21 @@
     var es = new EventSource(url)
     state.menuEvents = es
 
-    es.addEventListener("menu", function () {
+    es.addEventListener("menu", function (e) {
       setConnectionState("connected")
+      try {
+        var data = JSON.parse(e.data)
+        // Build session lookup map
+        state.sessionMap = {}
+        var items = data.items || []
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].session) {
+            state.sessionMap[items[i].session.id] = items[i].session
+          }
+        }
+      } catch (err) {
+        console.error("menu SSE parse error:", err)
+      }
       fetchTasks()
     })
 
@@ -329,7 +365,12 @@
 
     // Footer: status badge + mini session chain
     var footer = el("div", "agent-card-footer")
-    footer.appendChild(createAgentStatusBadge(task.agentStatus))
+    var liveSession = getActiveSessionForTask(task)
+    if (liveSession) {
+      footer.appendChild(createAgentStatusBadge(mapSessionStatus(liveSession.status)))
+    } else {
+      footer.appendChild(createAgentStatusBadge(task.agentStatus))
+    }
 
     // Ask badge if waiting with question
     if (task.agentStatus === "waiting" && task.askQuestion) {
@@ -479,7 +520,12 @@
     top.appendChild(el("span", "detail-title", (task.project || "\u2014") + " \u00B7 " + task.id))
 
     var actions = el("div", "detail-actions")
-    actions.appendChild(createAgentStatusBadge(task.agentStatus))
+    var detailLive = getActiveSessionForTask(task)
+    if (detailLive) {
+      actions.appendChild(createAgentStatusBadge(mapSessionStatus(detailLive.status)))
+    } else {
+      actions.appendChild(createAgentStatusBadge(task.agentStatus))
+    }
     top.appendChild(actions)
 
     header.appendChild(top)
@@ -558,6 +604,21 @@
 
       container.appendChild(pip)
     }
+
+    // Phase transition button
+    var currentPhaseIdx = PHASES.indexOf(task.phase)
+    if (task.status !== "done" && currentPhaseIdx >= 0 && currentPhaseIdx < PHASES.length - 1) {
+      var nextPhase = PHASES[currentPhaseIdx + 1]
+      var transBtn = el("button", "phase-transition-btn", "\u2192 " + phaseLabel(nextPhase))
+      transBtn.dataset.taskId = task.id
+      transBtn.dataset.nextPhase = nextPhase
+      transBtn.addEventListener("click", handlePhaseTransition)
+      container.appendChild(transBtn)
+    }
+  }
+
+  function phaseLabel(phase) {
+    return phase.charAt(0).toUpperCase() + phase.slice(1)
   }
 
   // ── Preview header ────────────────────────────────────────────────
@@ -570,7 +631,9 @@
     var projLabel = el("span", "preview-header-project", task.project || "\u2014")
     container.appendChild(projLabel)
 
-    var agentMeta = AGENT_STATUS_META[task.agentStatus] || AGENT_STATUS_META.idle
+    var previewLive = getActiveSessionForTask(task)
+    var effectiveStatus = previewLive ? mapSessionStatus(previewLive.status) : task.agentStatus
+    var agentMeta = AGENT_STATUS_META[effectiveStatus] || AGENT_STATUS_META.idle
     var statusSpan = el("span", "preview-header-status")
     statusSpan.textContent = agentMeta.icon + " " + agentMeta.label
     statusSpan.style.color = agentMeta.color
@@ -584,7 +647,18 @@
     if (!container) return
     clearChildren(container)
 
-    if (!task.tmuxSession) {
+    // Resolve the tmux session name:
+    // 1. Try live session from session map (real session.Instance)
+    // 2. Fall back to task.tmuxSession (container-based legacy)
+    var tmuxName = null
+    var liveSession = getActiveSessionForTask(task)
+    if (liveSession && liveSession.tmuxSession) {
+      tmuxName = liveSession.tmuxSession
+    } else if (task.tmuxSession) {
+      tmuxName = task.tmuxSession
+    }
+
+    if (!tmuxName) {
       var placeholder = el("div", "terminal-placeholder", "No session attached.")
       container.appendChild(placeholder)
       return
@@ -616,7 +690,7 @@
     state.fitAddon = fitAddon
 
     var protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(task.tmuxSession)
+    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(tmuxName)
     if (state.authToken) wsUrl += "?token=" + encodeURIComponent(state.authToken)
     var ws = new WebSocket(wsUrl)
     state.terminalWs = ws
@@ -645,6 +719,32 @@
       state.terminal = null
     }
     state.fitAddon = null
+  }
+
+  // ── Phase transition ────────────────────────────────────────────────
+  function handlePhaseTransition(e) {
+    var taskId = e.currentTarget.dataset.taskId
+    var nextPhase = e.currentTarget.dataset.nextPhase
+    if (!taskId || !nextPhase) return
+
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/tasks/" + taskId + "/transition"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ nextPhase: nextPhase }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("transition failed: " + r.status)
+        return r.json()
+      })
+      .then(function () {
+        fetchTasks()
+      })
+      .catch(function (err) {
+        console.error("handlePhaseTransition:", err)
+      })
   }
 
   // ── Resize handler ────────────────────────────────────────────────

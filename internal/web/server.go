@@ -52,6 +52,7 @@ type Server struct {
 	hubProjects     *hub.ProjectStore
 	containerExec   hub.ContainerExecutor
 	sessionLauncher *hub.SessionLauncher
+	hubBridge       *HubSessionBridge
 
 	taskSubscribersMu sync.Mutex
 	taskSubscribers   map[chan struct{}]struct{}
@@ -96,6 +97,11 @@ func NewServer(cfg Config) *Server {
 	// Initialize container executor for Docker-based task execution.
 	s.containerExec = &hub.DockerExecutor{}
 	s.sessionLauncher = &hub.SessionLauncher{Executor: s.containerExec}
+
+	// Initialize hub-session bridge for local session orchestration.
+	if s.hubTasks != nil && s.hubProjects != nil {
+		s.hubBridge = NewHubSessionBridge(cfg.Profile, s.hubTasks, s.hubProjects)
+	}
 
 	if pushSvc, err := newPushService(cfg, menuData); err != nil {
 		webLog.Warn("push_disabled", slog.String("error", err.Error()))
