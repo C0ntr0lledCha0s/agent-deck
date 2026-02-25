@@ -2,7 +2,10 @@
 // with panic isolation and concurrent-safe access.
 package eventbus
 
-import "sync"
+import (
+	"log/slog"
+	"sync"
+)
 
 // EventType identifies the kind of event being emitted.
 type EventType string
@@ -26,7 +29,7 @@ const (
 type Event struct {
 	Type    EventType
 	Channel string
-	Data    interface{}
+	Data    any
 }
 
 // Handler is a callback invoked when an event is emitted.
@@ -55,10 +58,13 @@ func (b *EventBus) Subscribe(handler Handler) func() {
 	b.subscribers[id] = handler
 	b.mu.Unlock()
 
+	var once sync.Once
 	return func() {
-		b.mu.Lock()
-		delete(b.subscribers, id)
-		b.mu.Unlock()
+		once.Do(func() {
+			b.mu.Lock()
+			delete(b.subscribers, id)
+			b.mu.Unlock()
+		})
 	}
 }
 
@@ -75,7 +81,11 @@ func (b *EventBus) Emit(event Event) {
 
 	for _, h := range snapshot {
 		func() {
-			defer func() { recover() }()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("eventbus: subscriber panicked", "panic", r, "event_type", event.Type)
+				}
+			}()
 			h(event)
 		}()
 	}
