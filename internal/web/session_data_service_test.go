@@ -117,6 +117,66 @@ func TestSessionDataService_LoadMenuSnapshot(t *testing.T) {
 	if snapshot.Items[3].Session.Status != session.StatusWaiting {
 		t.Fatalf("expected sess-backend waiting, got %s", snapshot.Items[3].Session.Status)
 	}
+
+	// Verify tier assignment: running → active, waiting → needsAttention, idle → idle
+	if snapshot.Items[1].Session.Tier != "active" {
+		t.Fatalf("expected sess-work tier=active, got %s", snapshot.Items[1].Session.Tier)
+	}
+	if snapshot.Items[3].Session.Tier != "needsAttention" {
+		t.Fatalf("expected sess-backend tier=needsAttention, got %s", snapshot.Items[3].Session.Tier)
+	}
+	if snapshot.Items[3].Session.TierBadge != "approval" {
+		t.Fatalf("expected sess-backend tierBadge=approval, got %s", snapshot.Items[3].Session.TierBadge)
+	}
+	if snapshot.Items[5].Session.Tier != "idle" {
+		t.Fatalf("expected sess-personal tier=idle, got %s", snapshot.Items[5].Session.Tier)
+	}
+}
+
+func TestAssignSessionTiers(t *testing.T) {
+	now := time.Date(2026, time.February, 25, 12, 0, 0, 0, time.UTC)
+
+	items := []MenuItem{
+		{Type: MenuItemTypeGroup, Group: &MenuGroup{Name: "g"}},
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "waiting", Status: session.StatusWaiting}},
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "error", Status: session.StatusError}},
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "running", Status: session.StatusRunning}},
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "starting", Status: session.StatusStarting}},
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "recent", Status: session.StatusIdle, LastAccessedAt: now.Add(-10 * time.Minute)}},
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "old-idle", Status: session.StatusIdle, LastAccessedAt: now.Add(-2 * time.Hour)}},
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "zero-idle", Status: session.StatusIdle}},
+	}
+
+	assignSessionTiers(items, now)
+
+	tests := []struct {
+		idx       int
+		wantTier  string
+		wantBadge string
+	}{
+		{1, "needsAttention", "approval"},
+		{2, "needsAttention", "error"},
+		{3, "active", ""},
+		{4, "active", ""},
+		{5, "recent", ""},
+		{6, "idle", ""},
+		{7, "idle", ""},
+	}
+
+	for _, tc := range tests {
+		s := items[tc.idx].Session
+		if s.Tier != tc.wantTier {
+			t.Errorf("item[%d] (%s): tier=%q, want %q", tc.idx, s.ID, s.Tier, tc.wantTier)
+		}
+		if s.TierBadge != tc.wantBadge {
+			t.Errorf("item[%d] (%s): tierBadge=%q, want %q", tc.idx, s.ID, s.TierBadge, tc.wantBadge)
+		}
+	}
+
+	// Group items should be untouched
+	if items[0].Session != nil {
+		t.Error("group item should not have a session")
+	}
 }
 
 func TestSessionDataService_LoadMenuSnapshotOpenStorageError(t *testing.T) {

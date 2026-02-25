@@ -208,6 +208,80 @@
   color: var(--text-dim);
 }
 
+/* ── Tier sections ─────────────────────────────────────────────── */
+
+.tier-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.tier-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  user-select: none;
+}
+
+.tier-header--needsAttention {
+  color: var(--orange);
+  border-left: 3px solid var(--orange);
+}
+
+.tier-header--active {
+  color: var(--green);
+}
+
+.tier-header--recent {
+  color: var(--text-mid);
+}
+
+.tier-header--idle {
+  color: var(--text-dim);
+}
+
+.tier-badge {
+  font-weight: 400;
+  font-size: 0.68rem;
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+.tier-header--needsAttention .tier-badge {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--orange);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.tier-collapsed > .agent-card {
+  display: none;
+}
+
+.pulse-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+  vertical-align: middle;
+}
+
+.tier-section--idle .agent-card {
+  opacity: 0.7;
+}
+
 /* ── Agent card ────────────────────────────────────────────────── */
 
 .agent-card {

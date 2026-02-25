@@ -486,6 +486,44 @@
     renderChatBar()
   }
 
+  // ── Tier definitions ──────────────────────────────────────────────
+  var TIER_DEFS = [
+    { key: "needsAttention", label: "Needs Attention", cssVar: "--needsAttention" },
+    { key: "active",         label: "Active",          cssVar: "--active" },
+    { key: "recent",         label: "Recent",          cssVar: "--recent" },
+    { key: "idle",           label: "Idle",            cssVar: "--idle" },
+  ]
+
+  var RECENT_THRESHOLD_MS = 30 * 60 * 1000
+
+  function assignTaskTier(task) {
+    var s = task.agentStatus || ""
+    if (s === "waiting" || s === "error") {
+      task.tier = "needsAttention"
+      task.tierBadge = s === "waiting" ? "approval" : "error"
+    } else if (s === "running" || s === "thinking") {
+      task.tier = "active"
+      task.tierBadge = ""
+    } else if (s === "idle" || s === "") {
+      var updatedAt = task.updatedAt ? new Date(task.updatedAt).getTime() : 0
+      if (updatedAt && (Date.now() - updatedAt) < RECENT_THRESHOLD_MS) {
+        task.tier = "recent"
+      } else {
+        task.tier = "idle"
+      }
+      task.tierBadge = ""
+    } else if (s === "complete") {
+      task.tier = "idle"
+      task.tierBadge = ""
+    } else {
+      task.tier = "idle"
+      task.tierBadge = ""
+    }
+  }
+
+  // Track collapsed state for tier sections
+  var tierCollapsed = { idle: true }
+
   // ── Task list ─────────────────────────────────────────────────────
   function renderTaskList() {
     var taskList = document.getElementById("task-list")
@@ -498,10 +536,15 @@
       return true
     })
 
-    // Remove existing cards and section headers
-    var existing = taskList.querySelectorAll(".agent-card, .task-section-header")
+    // Remove existing tier sections
+    var existing = taskList.querySelectorAll(".tier-section")
     for (var i = 0; i < existing.length; i++) {
       existing[i].remove()
+    }
+    // Also remove any legacy cards/headers outside tier sections
+    var legacy = taskList.querySelectorAll(".agent-card, .task-section-header")
+    for (var li = 0; li < legacy.length; li++) {
+      legacy[li].remove()
     }
 
     if (visible.length === 0) {
@@ -516,39 +559,70 @@
 
     if (emptyEl) emptyEl.style.display = "none"
 
-    // Split into active and completed
-    var active = []
-    var completed = []
+    // Assign tiers to each task
     for (var j = 0; j < visible.length; j++) {
-      if (visible[j].status === "done") {
-        completed.push(visible[j])
-      } else {
-        active.push(visible[j])
-      }
+      assignTaskTier(visible[j])
     }
 
-    // Active section
-    if (active.length > 0) {
-      var activeHeader = el("div", "task-section-header")
-      activeHeader.appendChild(el("span", null, "Active"))
-      activeHeader.appendChild(el("span", "task-section-count", active.length.toString()))
-      taskList.appendChild(activeHeader)
-
-      for (var a = 0; a < active.length; a++) {
-        taskList.appendChild(createAgentCard(active[a]))
-      }
+    // Group by tier
+    var tierBuckets = {}
+    for (var td = 0; td < TIER_DEFS.length; td++) {
+      tierBuckets[TIER_DEFS[td].key] = []
+    }
+    for (var k = 0; k < visible.length; k++) {
+      var tierKey = visible[k].tier || "idle"
+      if (!tierBuckets[tierKey]) tierBuckets[tierKey] = []
+      tierBuckets[tierKey].push(visible[k])
     }
 
-    // Completed section
-    if (completed.length > 0) {
-      var completedHeader = el("div", "task-section-header")
-      completedHeader.appendChild(el("span", null, "Completed"))
-      completedHeader.appendChild(el("span", "task-section-count", completed.length.toString()))
-      taskList.appendChild(completedHeader)
+    // Render each non-empty tier section
+    for (var t = 0; t < TIER_DEFS.length; t++) {
+      var def = TIER_DEFS[t]
+      var bucket = tierBuckets[def.key]
+      if (bucket.length === 0) continue
 
-      for (var c = 0; c < completed.length; c++) {
-        taskList.appendChild(createAgentCard(completed[c]))
+      var section = el("div", "tier-section tier-section" + def.cssVar)
+      section.dataset.tier = def.key
+
+      // Header
+      var header = el("div", "tier-header tier-header" + def.cssVar)
+      var headerLeft = el("span", null)
+
+      // Pulse dot for active tier
+      if (def.key === "active") {
+        var dot = el("span", "pulse-dot")
+        headerLeft.appendChild(dot)
+        headerLeft.appendChild(document.createTextNode(" "))
       }
+
+      headerLeft.appendChild(document.createTextNode(def.label))
+      header.appendChild(headerLeft)
+
+      var badge = el("span", "tier-badge", bucket.length.toString())
+      header.appendChild(badge)
+
+      var isCollapsed = !!tierCollapsed[def.key]
+      if (isCollapsed) {
+        section.classList.add("tier-collapsed")
+      }
+
+      // Toggle collapse on header click
+      ;(function (sectionEl, tierKey) {
+        header.addEventListener("click", function () {
+          tierCollapsed[tierKey] = !tierCollapsed[tierKey]
+          sectionEl.classList.toggle("tier-collapsed")
+        })
+      })(section, def.key)
+
+      header.style.cursor = "pointer"
+      section.appendChild(header)
+
+      // Cards
+      for (var c = 0; c < bucket.length; c++) {
+        section.appendChild(createAgentCard(bucket[c]))
+      }
+
+      taskList.appendChild(section)
     }
   }
 
