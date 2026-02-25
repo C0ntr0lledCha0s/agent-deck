@@ -497,11 +497,13 @@
   var RECENT_THRESHOLD_MS = 30 * 60 * 1000
 
   function assignTaskTier(task) {
+    // Prefer server-provided tier if present
+    if (task.tier) return
     var s = task.agentStatus || ""
     if (s === "waiting" || s === "error") {
       task.tier = "needsAttention"
       task.tierBadge = s === "waiting" ? "approval" : "error"
-    } else if (s === "running" || s === "thinking") {
+    } else if (s === "running" || s === "thinking" || s === "starting") {
       task.tier = "active"
       task.tierBadge = ""
     } else if (s === "idle" || s === "") {
@@ -606,9 +608,10 @@
         section.classList.add("tier-collapsed")
       }
 
-      // Toggle collapse on header click
+      // Toggle collapse on header click (needsAttention always expanded)
       ;(function (sectionEl, tierKey) {
         header.addEventListener("click", function () {
+          if (tierKey === "needsAttention") return
           tierCollapsed[tierKey] = !tierCollapsed[tierKey]
           sectionEl.classList.toggle("tier-collapsed")
         })
