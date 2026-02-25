@@ -909,6 +909,33 @@
   50% { opacity: 0.4; }
 }
 
+/* ── Connection bar ────────────────────────────────────────────── */
+
+.connection-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  z-index: 9999;
+  transition: opacity 400ms ease;
+}
+
+.connection-bar--connected {
+  background: #4caf50;
+  opacity: 0;
+}
+
+.connection-bar--reconnecting {
+  background: #ff9800;
+  opacity: 1;
+}
+
+.connection-bar--disconnected {
+  background: #f44336;
+  opacity: 1;
+}
+
 /* ── Mobile bottom nav ─────────────────────────────────────────── */
 
 .mobile-nav {

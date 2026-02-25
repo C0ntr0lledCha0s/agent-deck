@@ -114,7 +114,8 @@
     return null
   }
 
-  // ── SSE ───────────────────────────────────────────────────────────
+  // ── SSE (deprecated — kept for backward compat until Task 13) ────
+  // @deprecated Use ConnectionManager instead. Will be removed in a future release.
   function connectSSE() {
     if (state.menuEvents) {
       state.menuEvents.close()
@@ -182,6 +183,245 @@
       if (state.tasks[i].status !== "done") active++
     }
     countEl.textContent = active
+  }
+
+  // ── ConnectionManager (WebSocket with auto-reconnect) ────────────
+  function ConnectionManager(url) {
+    this.url = url
+    this.state = "disconnected"
+    this.ws = null
+    this.lastEventAt = 0
+    this.reconnectAttempts = 0
+    this.subscriptions = {}
+    this._listeners = { stateChange: [], reconnect: [] }
+    this._staleTimer = null
+    this._reconnectTimer = null
+    this._pongTimer = null
+    this._awaitingPong = false
+
+    // Config
+    this.staleThresholdMs = 45000
+    this.pongTimeoutMs = 2000
+    this.baseDelayMs = 1000
+    this.maxDelayMs = 30000
+    this.maxAttempts = 10
+  }
+
+  ConnectionManager.prototype.connect = function () {
+    var self = this
+    if (this.ws) {
+      try { this.ws.close() } catch (_) { /* ignore */ }
+    }
+    this._setState("reconnecting")
+    var ws = new WebSocket(this.url)
+    this.ws = ws
+
+    ws.onopen = function () {
+      self.reconnectAttempts = 0
+      self.lastEventAt = Date.now()
+      self._setState("connected")
+      self._resubscribeAll()
+      self._startStaleCheck()
+    }
+
+    ws.onmessage = function (e) {
+      self.lastEventAt = Date.now()
+      try {
+        var msg = JSON.parse(e.data)
+        self._handleMessage(msg)
+      } catch (err) {
+        console.error("ConnectionManager: bad message", err)
+      }
+    }
+
+    ws.onclose = function () {
+      self.ws = null
+      self._stopStaleCheck()
+      if (self.state !== "disconnected") {
+        self._setState("reconnecting")
+        self._scheduleReconnect()
+      }
+    }
+
+    ws.onerror = function () {
+      // onclose will fire after onerror, so reconnect logic lives there
+    }
+
+    this._setupVisibility()
+  }
+
+  ConnectionManager.prototype._handleMessage = function (msg) {
+    if (!msg || !msg.type) return
+
+    if (msg.type === "pong") {
+      this._awaitingPong = false
+      if (this._pongTimer) {
+        clearTimeout(this._pongTimer)
+        this._pongTimer = null
+      }
+      return
+    }
+
+    if (msg.type === "heartbeat") {
+      // heartbeat keeps connection alive; lastEventAt already updated
+      return
+    }
+
+    // Event or snapshot: dispatch to channel subscribers
+    var channel = msg.channel || ""
+    if (channel && this.subscriptions[channel]) {
+      var handlers = this.subscriptions[channel]
+      for (var i = 0; i < handlers.length; i++) {
+        try { handlers[i](msg) } catch (err) {
+          console.error("ConnectionManager: handler error on " + channel, err)
+        }
+      }
+    }
+  }
+
+  ConnectionManager.prototype.subscribe = function (channel, handler) {
+    if (!this.subscriptions[channel]) {
+      this.subscriptions[channel] = []
+    }
+    this.subscriptions[channel].push(handler)
+
+    // Send subscribe message if already connected
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ action: "subscribe", channel: channel }))
+    }
+
+    var self = this
+    return function () {
+      var arr = self.subscriptions[channel]
+      if (!arr) return
+      var idx = arr.indexOf(handler)
+      if (idx !== -1) arr.splice(idx, 1)
+      if (arr.length === 0) delete self.subscriptions[channel]
+    }
+  }
+
+  ConnectionManager.prototype._resubscribeAll = function () {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    var channels = Object.keys(this.subscriptions)
+    for (var i = 0; i < channels.length; i++) {
+      this.ws.send(JSON.stringify({ action: "subscribe", channel: channels[i] }))
+    }
+  }
+
+  ConnectionManager.prototype._scheduleReconnect = function () {
+    var self = this
+    if (this._reconnectTimer) return
+    if (this.reconnectAttempts >= this.maxAttempts) {
+      self._setState("disconnected")
+      return
+    }
+
+    var delay = Math.min(
+      this.baseDelayMs * Math.pow(2, this.reconnectAttempts),
+      this.maxDelayMs
+    )
+    // Jitter: multiply by (0.5 + random * 0.5) so delay is between 50%-100% of computed value
+    delay = Math.floor(delay * (0.5 + Math.random() * 0.5))
+    this.reconnectAttempts++
+
+    this._reconnectTimer = setTimeout(function () {
+      self._reconnectTimer = null
+      self.connect()
+      // Fire reconnect listeners so callers can refetch data
+      for (var i = 0; i < self._listeners.reconnect.length; i++) {
+        try { self._listeners.reconnect[i]() } catch (_) { /* ignore */ }
+      }
+    }, delay)
+  }
+
+  ConnectionManager.prototype._startStaleCheck = function () {
+    var self = this
+    this._stopStaleCheck()
+    this._staleTimer = setInterval(function () {
+      if (self.state !== "connected") return
+      var elapsed = Date.now() - self.lastEventAt
+      if (elapsed > self.staleThresholdMs) {
+        // Connection appears stale — attempt recovery via ping
+        self._checkWithPing()
+      }
+    }, 15000)
+  }
+
+  ConnectionManager.prototype._stopStaleCheck = function () {
+    if (this._staleTimer) {
+      clearInterval(this._staleTimer)
+      this._staleTimer = null
+    }
+  }
+
+  ConnectionManager.prototype._setupVisibility = function () {
+    var self = this
+    // Only set up once
+    if (this._visibilityBound) return
+    this._visibilityBound = true
+
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible" && self.state === "connected") {
+        self._checkWithPing()
+      }
+    })
+  }
+
+  ConnectionManager.prototype._checkWithPing = function () {
+    var self = this
+    if (this._awaitingPong) return
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+
+    this._awaitingPong = true
+    try {
+      this.ws.send(JSON.stringify({ action: "ping" }))
+    } catch (_) {
+      this._awaitingPong = false
+      return
+    }
+
+    this._pongTimer = setTimeout(function () {
+      self._pongTimer = null
+      if (self._awaitingPong) {
+        // No pong received in time — connection is dead
+        self._awaitingPong = false
+        if (self.ws) {
+          try { self.ws.close() } catch (_) { /* ignore */ }
+        }
+      }
+    }, this.pongTimeoutMs)
+  }
+
+  ConnectionManager.prototype._setState = function (newState) {
+    if (this.state === newState) return
+    var oldState = this.state
+    this.state = newState
+    for (var i = 0; i < this._listeners.stateChange.length; i++) {
+      try { this._listeners.stateChange[i](newState, oldState) } catch (_) { /* ignore */ }
+    }
+  }
+
+  ConnectionManager.prototype.on = function (event, handler) {
+    if (this._listeners[event]) {
+      this._listeners[event].push(handler)
+    }
+  }
+
+  ConnectionManager.prototype.disconnect = function () {
+    this._setState("disconnected")
+    this._stopStaleCheck()
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer)
+      this._reconnectTimer = null
+    }
+    if (this._pongTimer) {
+      clearTimeout(this._pongTimer)
+      this._pongTimer = null
+    }
+    if (this.ws) {
+      try { this.ws.close() } catch (_) { /* ignore */ }
+      this.ws = null
+    }
   }
 
   // ── Sidebar ───────────────────────────────────────────────────────
@@ -575,6 +815,38 @@
     statusSpan.textContent = agentMeta.icon + " " + agentMeta.label
     statusSpan.style.color = agentMeta.color
     container.appendChild(statusSpan)
+  }
+
+  // ── OutputBuffer (throttles writes to xterm.js) ──────────────────
+  function OutputBuffer(terminal, flushIntervalMs) {
+    this.terminal = terminal
+    this.flushIntervalMs = flushIntervalMs || 50
+    this.buffer = ""
+    this.pending = false
+    this.maxBufferSize = 65536 // 64 KB
+  }
+
+  OutputBuffer.prototype.write = function (data) {
+    this.buffer += data
+    if (this.buffer.length >= this.maxBufferSize) {
+      this.flush()
+      return
+    }
+    if (!this.pending) {
+      this.pending = true
+      var self = this
+      requestAnimationFrame(function () {
+        self.flush()
+      })
+    }
+  }
+
+  OutputBuffer.prototype.flush = function () {
+    if (this.buffer.length > 0) {
+      this.terminal.write(this.buffer)
+      this.buffer = ""
+    }
+    this.pending = false
   }
 
   // ── Terminal management ───────────────────────────────────────────
@@ -1092,5 +1364,51 @@
   renderChatBar()
   fetchTasks()
   fetchProjects()
+
+  // Legacy SSE — kept until Task 13 removes it
   connectSSE()
+
+  // ── ConnectionManager (WebSocket-based event bus) ───────────────
+  ;(function initConnectionManager() {
+    var wsProto = (location.protocol === "https:") ? "wss:" : "ws:"
+    var wsUrl = wsProto + "//" + location.host + "/ws/events"
+    var token = state.authToken
+    if (token) wsUrl += "?token=" + encodeURIComponent(token)
+
+    var cm = new ConnectionManager(wsUrl)
+
+    // Subscribe to session updates
+    cm.subscribe("sessions", function () {
+      // fetchMenuData will be added in a future task; fall back to fetchTasks
+      if (typeof fetchMenuData === "function") fetchMenuData()
+      else fetchTasks()
+    })
+
+    // Subscribe to task updates
+    cm.subscribe("tasks", function () {
+      if (typeof fetchTasks === "function") fetchTasks()
+    })
+
+    // Update connection bar on state changes
+    cm.on("stateChange", function (newState) {
+      var bar = document.getElementById("connection-bar")
+      if (!bar) return
+      bar.className = "connection-bar"
+      if (newState === "connected") {
+        bar.classList.add("connection-bar--connected")
+      } else if (newState === "reconnecting") {
+        bar.classList.add("connection-bar--reconnecting")
+      } else {
+        bar.classList.add("connection-bar--disconnected")
+      }
+    })
+
+    // Refetch data after reconnect
+    cm.on("reconnect", function () {
+      fetchTasks()
+      fetchProjects()
+    })
+
+    cm.connect()
+  })()
 })()
