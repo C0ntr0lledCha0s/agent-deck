@@ -33,6 +33,14 @@ func extra() {}
 	assert.Contains(t, aug.DiffHTML, "diff-del", "DiffHTML should use diff-del class")
 }
 
+func TestComputeEditAugment_EscapesHTML(t *testing.T) {
+	aug, err := computeEditAugment(`a < b`, `a > b`, "test.go")
+	require.NoError(t, err)
+	assert.NotContains(t, aug.DiffHTML, "<b", "raw < should be escaped")
+	assert.Contains(t, aug.DiffHTML, "&lt;", "old text < should be escaped")
+	assert.Contains(t, aug.DiffHTML, "&gt;", "new text > should be escaped")
+}
+
 func TestComputeBashAugment(t *testing.T) {
 	stdout := "line one\nline two\n"
 	aug := computeBashAugment(stdout, "", 0)
@@ -50,7 +58,7 @@ func TestComputeBashAugment_Error(t *testing.T) {
 
 	assert.True(t, aug.IsError, "exit code 127 should be an error")
 	assert.Equal(t, 0, aug.LineCount, "no stdout lines")
-	assert.Contains(t, aug.Stderr, "command not found")
+	assert.Contains(t, aug.StderrHTML, "command not found")
 }
 
 func TestComputeReadAugment(t *testing.T) {

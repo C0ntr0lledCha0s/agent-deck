@@ -20,7 +20,7 @@ type editAugment struct {
 // bashAugment holds enriched metadata for a bash command result.
 type bashAugment struct {
 	StdoutHTML string // HTML-escaped stdout
-	Stderr     string // raw stderr text
+	StderrHTML string // HTML-escaped stderr
 	LineCount  int    // number of non-empty lines in stdout
 	IsError    bool   // true when the command failed
 	Truncated  bool   // true when output was truncated
@@ -77,7 +77,7 @@ func computeBashAugment(stdout, stderr string, exitCode int) *bashAugment {
 
 	return &bashAugment{
 		StdoutHTML: escapeHTML(stdout),
-		Stderr:     stderr,
+		StderrHTML: escapeHTML(stderr),
 		LineCount:  lineCount,
 		IsError:    exitCode != 0 || stderr != "",
 		Truncated:  false,
