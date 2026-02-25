@@ -209,19 +209,29 @@
 
   ConnectionManager.prototype.connect = function () {
     var self = this
+    var wasConnected = this.state === "connected" || this.state === "reconnecting"
     if (this.ws) {
       try { this.ws.close() } catch (_) { /* ignore */ }
     }
-    this._setState("reconnecting")
+    if (wasConnected) {
+      this._setState("reconnecting")
+    }
     var ws = new WebSocket(this.url)
     this.ws = ws
 
     ws.onopen = function () {
+      var isReconnect = self.reconnectAttempts > 0
       self.reconnectAttempts = 0
       self.lastEventAt = Date.now()
       self._setState("connected")
       self._resubscribeAll()
       self._startStaleCheck()
+      // Fire reconnect listeners after connection is fully established
+      if (isReconnect) {
+        for (var i = 0; i < self._listeners.reconnect.length; i++) {
+          try { self._listeners.reconnect[i]() } catch (_) { /* ignore */ }
+        }
+      }
     }
 
     ws.onmessage = function (e) {
@@ -287,7 +297,7 @@
 
     // Send subscribe message if already connected
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ action: "subscribe", channel: channel }))
+      this.ws.send(JSON.stringify({ type: "subscribe", channel: channel }))
     }
 
     var self = this
@@ -304,7 +314,9 @@
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
     var channels = Object.keys(this.subscriptions)
     for (var i = 0; i < channels.length; i++) {
-      this.ws.send(JSON.stringify({ action: "subscribe", channel: channels[i] }))
+      try {
+        this.ws.send(JSON.stringify({ type: "subscribe", channel: channels[i] }))
+      } catch (_) { /* ws may have closed mid-loop */ }
     }
   }
 
@@ -327,10 +339,6 @@
     this._reconnectTimer = setTimeout(function () {
       self._reconnectTimer = null
       self.connect()
-      // Fire reconnect listeners so callers can refetch data
-      for (var i = 0; i < self._listeners.reconnect.length; i++) {
-        try { self._listeners.reconnect[i]() } catch (_) { /* ignore */ }
-      }
     }, delay)
   }
 
@@ -374,7 +382,7 @@
 
     this._awaitingPong = true
     try {
-      this.ws.send(JSON.stringify({ action: "ping" }))
+      this.ws.send(JSON.stringify({ type: "ping" }))
     } catch (_) {
       this._awaitingPong = false
       return
@@ -818,9 +826,8 @@
   }
 
   // ── OutputBuffer (throttles writes to xterm.js) ──────────────────
-  function OutputBuffer(terminal, flushIntervalMs) {
+  function OutputBuffer(terminal) {
     this.terminal = terminal
-    this.flushIntervalMs = flushIntervalMs || 50
     this.buffer = ""
     this.pending = false
     this.maxBufferSize = 65536 // 64 KB
