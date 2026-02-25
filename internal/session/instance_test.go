@@ -2398,6 +2398,7 @@ func TestKillClearsCachedPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
+	defer func() { _ = inst.Kill() }()
 
 	// Populate cached fields that should be cleared on Kill()
 	inst.cachedPrompt = "Tell me about the architecture of this system"
