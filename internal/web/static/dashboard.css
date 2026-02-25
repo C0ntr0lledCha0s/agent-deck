@@ -832,6 +832,27 @@
   object-fit: cover;
 }
 
+.chat-attach-btn {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 120ms, color 120ms;
+}
+
+.chat-attach-btn:hover {
+  background: var(--bg-card);
+  color: var(--text);
+}
+
 /* ── Chat bar ──────────────────────────────────────────────────── */
 
 .chat-bar {

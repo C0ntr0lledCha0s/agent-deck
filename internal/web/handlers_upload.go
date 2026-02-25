@@ -52,6 +52,11 @@ func (s *Server) handleUploadWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.cfg.ReadOnly {
+		writeAPIError(w, http.StatusForbidden, "READ_ONLY", "server is in read-only mode")
+		return
+	}
+
 	const prefix = "/ws/upload/"
 	sessionID := strings.TrimPrefix(r.URL.Path, prefix)
 	if sessionID == "" || strings.Contains(sessionID, "/") {
@@ -119,6 +124,16 @@ func (s *Server) handleUploadWS(w http.ResponseWriter, r *http.Request) {
 
 			switch raw.Type {
 			case "start":
+				// Close and discard any prior in-progress upload.
+				if file != nil {
+					file.Close()
+					file = nil
+					if filePath != "" {
+						_ = os.Remove(filePath)
+						filePath = ""
+					}
+				}
+
 				var startMsg uploadStartMsg
 				if err := json.Unmarshal(payload, &startMsg); err != nil {
 					_ = writeWSJSON(conn, map[string]string{
@@ -191,10 +206,15 @@ func (s *Server) handleUploadWS(w http.ResponseWriter, r *http.Request) {
 					slog.Int64("size", totalSize))
 
 			case "end":
-				if file != nil {
-					file.Close()
-					file = nil
+				if file == nil || filePath == "" {
+					_ = writeWSJSON(conn, map[string]string{
+						"type":    "error",
+						"message": "no upload in progress",
+					})
+					continue
 				}
+				file.Close()
+				file = nil
 				completed = true
 				_ = writeWSJSON(conn, uploadCompleteMsg{
 					Type:     "complete",
@@ -271,6 +291,11 @@ func sanitizeFilename(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "unnamed"
+	}
+	// Cap length to stay within filesystem NAME_MAX (255) minus UUID prefix.
+	const maxFilenameLen = 200
+	if len(name) > maxFilenameLen {
+		name = name[:maxFilenameLen]
 	}
 	return name
 }

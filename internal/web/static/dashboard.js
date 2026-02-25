@@ -1444,6 +1444,9 @@
         sendChunks(ws, file, end)
       }
     }
+    reader.onerror = function () {
+      try { ws.close() } catch (_) {}
+    }
     reader.readAsArrayBuffer(slice)
   }
 
@@ -1829,6 +1832,24 @@
       if (e.dataTransfer && e.dataTransfer.files.length > 0) {
         handleUploadFiles(e.dataTransfer.files)
       }
+    })
+
+    // Attachment button: opens native file picker
+    var attachBtn = el("button", "chat-attach-btn")
+    attachBtn.type = "button"
+    attachBtn.setAttribute("aria-label", "Attach file")
+    attachBtn.textContent = "\uD83D\uDCCE" // paperclip emoji
+    chatBarEl.insertBefore(attachBtn, chatBarEl.querySelector(".chat-input"))
+    attachBtn.addEventListener("click", function () {
+      var input = document.createElement("input")
+      input.type = "file"
+      input.multiple = true
+      input.onchange = function () {
+        if (input.files && input.files.length > 0) {
+          handleUploadFiles(input.files)
+        }
+      }
+      input.click()
     })
   }
 

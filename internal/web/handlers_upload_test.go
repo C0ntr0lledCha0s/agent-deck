@@ -1,6 +1,9 @@
 package web
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSanitizeFilename(t *testing.T) {
 	tests := []struct {
@@ -17,6 +20,7 @@ func TestSanitizeFilename(t *testing.T) {
 		{name: "dots only", input: "...", expected: "."},
 		{name: "mixed traversal", input: "../../foo/../bar.txt", expected: "foobar.txt"},
 		{name: "single dot prefix", input: ".hidden", expected: ".hidden"},
+		{name: "very long filename", input: strings.Repeat("a", 500) + ".txt", expected: strings.Repeat("a", 200)},
 	}
 
 	for _, tc := range tests {
