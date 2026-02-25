@@ -142,6 +142,52 @@ func TestGetActiveSession_NoActive(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestSaveInstance_PersistsToStorage(t *testing.T) {
+	t.Setenv("AGENTDECK_PROFILE", "_test")
+
+	hubDir := t.TempDir()
+	ts, err := hub.NewTaskStore(hubDir)
+	require.NoError(t, err)
+	ps, err := hub.NewProjectStore(hubDir)
+	require.NoError(t, err)
+
+	bridge := NewHubSessionBridge("_test", ts, ps)
+	// Use real storage opener (defaultStorageOpener) — not mocked
+
+	proj := &hub.Project{Name: "test-proj", Path: t.TempDir(), Keywords: []string{"test"}}
+	require.NoError(t, ps.Save(proj))
+
+	task := &hub.Task{
+		Project:     "test-proj",
+		Description: "Integration test",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusBacklog,
+	}
+	require.NoError(t, ts.Save(task))
+
+	result, err := bridge.StartPhase(task.ID, hub.PhaseExecute)
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.SessionID)
+
+	// Verify session is in storage
+	storage, err := session.NewStorageWithProfile("_test")
+	require.NoError(t, err)
+	defer storage.Close()
+
+	instances, _, err := storage.LoadWithGroups()
+	require.NoError(t, err)
+
+	found := false
+	for _, inst := range instances {
+		if inst.ID == result.SessionID {
+			found = true
+			assert.Equal(t, "hub", inst.GroupPath)
+			assert.Equal(t, "claude", inst.GetToolThreadSafe())
+		}
+	}
+	assert.True(t, found, "session should be persisted in storage")
+}
+
 func TestPhasePrompt(t *testing.T) {
 	prompt := phasePrompt(hub.PhaseBrainstorm, "Fix auth bug in API service")
 	require.NotEmpty(t, prompt)

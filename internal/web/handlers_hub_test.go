@@ -1539,3 +1539,45 @@ func TestTaskCreate_AutoStartsPhaseSession(t *testing.T) {
 	assert.NotEmpty(t, resp.Task.Sessions[0].ClaudeSessionID)
 	assert.Equal(t, hub.TaskStatusRunning, resp.Task.Status)
 }
+
+func TestFullHubSessionFlow(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	proj := &hub.Project{Name: "api-service", Path: "/tmp/test-project", Keywords: []string{"api"}}
+	require.NoError(t, srv.hubProjects.Save(proj))
+
+	// 1. Create task — should auto-start brainstorm phase session
+	body := strings.NewReader(`{"project":"api-service","description":"Fix auth bug","phase":"brainstorm"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	var createResp taskDetailResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&createResp))
+	taskID := createResp.Task.ID
+	assert.Len(t, createResp.Task.Sessions, 1)
+
+	// 2. Transition to plan
+	body = strings.NewReader(`{"nextPhase":"plan","summary":"Explored approaches"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/tasks/"+taskID+"/transition", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	// 3. Verify task has 2 sessions via GET
+	req = httptest.NewRequest(http.MethodGet, "/api/tasks/"+taskID, nil)
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var getResp taskDetailResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&getResp))
+	assert.Len(t, getResp.Task.Sessions, 2)
+	assert.Equal(t, "complete", getResp.Task.Sessions[0].Status)
+	assert.Equal(t, "Explored approaches", getResp.Task.Sessions[0].Summary)
+	assert.Equal(t, "active", getResp.Task.Sessions[1].Status)
+	assert.Equal(t, hub.PhasePlan, getResp.Task.Phase)
+}
