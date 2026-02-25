@@ -41,7 +41,9 @@ var (
 func Code(code, language string) (string, error) {
 	key := cacheKey(code, language)
 
-	// Fast path: check cache under read lock.
+	// Fast path: check cache under read lock. Note: two goroutines may both
+	// miss and compute the same entry concurrently — this is benign (redundant
+	// work only) and avoids holding a write lock during expensive tokenisation.
 	cacheMu.RLock()
 	if cached, ok := cache[key]; ok {
 		cacheMu.RUnlock()
@@ -96,6 +98,8 @@ func DetectLanguage(filename string) string {
 // included once on any page that renders highlighted code.
 func CSS() string {
 	var buf bytes.Buffer
+	// WriteCSS to bytes.Buffer cannot fail; the only error source is the
+	// underlying writer, and bytes.Buffer.Write always returns nil error.
 	_ = formatter.WriteCSS(&buf, style)
 	return buf.String()
 }
