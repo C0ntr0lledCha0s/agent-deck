@@ -1373,6 +1373,86 @@
     document.removeEventListener("click", closeModeMenu)
   }
 
+  // ── File upload ──────────────────────────────────────────────────
+  var UPLOAD_CHUNK_SIZE = 64 * 1024 // 64 KB
+
+  function uploadFile(file) {
+    if (!state.selectedTaskId) return
+    var sessionId = state.selectedTaskId
+
+    var protocol = location.protocol === "https:" ? "wss:" : "ws:"
+    var url = protocol + "//" + location.host + "/ws/upload/" + encodeURIComponent(sessionId)
+    var ws = new WebSocket(url)
+
+    var progressBar = document.getElementById("upload-progress")
+    var progressFill = document.getElementById("upload-progress-fill")
+    if (!progressBar) {
+      var chatBar = document.getElementById("chat-bar")
+      if (chatBar) {
+        progressBar = el("div", "upload-progress")
+        progressBar.id = "upload-progress"
+        progressFill = el("div", "upload-progress-fill")
+        progressFill.id = "upload-progress-fill"
+        progressBar.appendChild(progressFill)
+        chatBar.parentNode.insertBefore(progressBar, chatBar)
+      }
+    }
+    if (progressBar) progressBar.style.display = ""
+    if (progressFill) progressFill.style.width = "0%"
+
+    ws.onopen = function () {
+      ws.send(JSON.stringify({ type: "start", filename: file.name, size: file.size }))
+      sendChunks(ws, file, 0)
+    }
+
+    ws.onmessage = function (e) {
+      try {
+        var msg = JSON.parse(e.data)
+        if (msg.type === "progress" && progressFill && msg.total > 0) {
+          var pct = Math.min(100, Math.round((msg.received / msg.total) * 100))
+          progressFill.style.width = pct + "%"
+        }
+        if (msg.type === "complete") {
+          if (progressFill) progressFill.style.width = "100%"
+          setTimeout(function () {
+            if (progressBar) progressBar.style.display = "none"
+          }, 1500)
+        }
+        if (msg.type === "error") {
+          console.error("Upload error:", msg.message)
+          if (progressBar) progressBar.style.display = "none"
+        }
+      } catch (_) {}
+    }
+
+    ws.onerror = function () {
+      if (progressBar) progressBar.style.display = "none"
+    }
+  }
+
+  function sendChunks(ws, file, offset) {
+    if (offset >= file.size) {
+      ws.send(JSON.stringify({ type: "end" }))
+      return
+    }
+    var end = Math.min(offset + UPLOAD_CHUNK_SIZE, file.size)
+    var slice = file.slice(offset, end)
+    var reader = new FileReader()
+    reader.onload = function () {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(reader.result)
+        sendChunks(ws, file, end)
+      }
+    }
+    reader.readAsArrayBuffer(slice)
+  }
+
+  function handleUploadFiles(files) {
+    for (var i = 0; i < files.length; i++) {
+      uploadFile(files[i])
+    }
+  }
+
   function sendChatMessage() {
     var input = document.getElementById("chat-input")
     if (!input) return
@@ -1716,6 +1796,38 @@
       if (e.key === "Enter") {
         e.preventDefault()
         sendChatMessage()
+      }
+    })
+    // Paste handler: detect files/images in clipboard
+    chatInput.addEventListener("paste", function (e) {
+      var items = (e.clipboardData || {}).items
+      if (!items) return
+      var files = []
+      for (var pi = 0; pi < items.length; pi++) {
+        if (items[pi].kind === "file") files.push(items[pi].getAsFile())
+      }
+      if (files.length > 0) {
+        e.preventDefault()
+        handleUploadFiles(files)
+      }
+    })
+  }
+
+  // Drag-and-drop upload on chat bar
+  var chatBarEl = document.getElementById("chat-bar")
+  if (chatBarEl) {
+    chatBarEl.addEventListener("dragover", function (e) {
+      e.preventDefault()
+      chatBarEl.classList.add("upload-dropzone")
+    })
+    chatBarEl.addEventListener("dragleave", function () {
+      chatBarEl.classList.remove("upload-dropzone")
+    })
+    chatBarEl.addEventListener("drop", function (e) {
+      e.preventDefault()
+      chatBarEl.classList.remove("upload-dropzone")
+      if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+        handleUploadFiles(e.dataTransfer.files)
       }
     })
   }

@@ -145,6 +145,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/push/presence", s.handlePushPresence)
 	mux.HandleFunc("/events/menu", s.handleMenuEvents)
 	mux.HandleFunc("/ws/session/", s.handleSessionWS)
+	mux.HandleFunc("/ws/upload/", s.handleUploadWS)
 	mux.HandleFunc("/ws/events", s.handleEventBusWS)
 
 	handler := withRecover(mux)
