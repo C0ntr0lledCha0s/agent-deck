@@ -103,7 +103,7 @@ func NewServer(cfg Config) *Server {
 	s.containerExec = &hub.DockerExecutor{}
 	s.sessionLauncher = &hub.SessionLauncher{Executor: s.containerExec}
 
-	if pushSvc, err := newPushService(cfg, menuData); err != nil {
+	if pushSvc, err := newPushService(cfg, menuData, s.eventBus, s.eventHub); err != nil {
 		webLog.Warn("push_disabled", slog.String("error", err.Error()))
 	} else {
 		s.push = pushSvc

@@ -16,13 +16,14 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/asheshgoplani/agent-deck/internal/eventbus"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 const (
 	pushSubscriptionsFileName = "web_push_subscriptions.json"
-	defaultPushPollInterval   = 3 * time.Second
+	defaultPushPollInterval   = 30 * time.Second
 )
 
 type pushSubscription struct {
@@ -307,6 +308,7 @@ type pushTransition struct {
 }
 
 type pushMessage struct {
+	Type       string `json:"type,omitempty"`
 	Title      string `json:"title"`
 	Body       string `json:"body"`
 	Tag        string `json:"tag,omitempty"`
@@ -345,18 +347,22 @@ type pushService struct {
 	store    pushSubscriptionStore
 	sender   webPushSender
 
+	eventBus *eventbus.EventBus
+	eventHub *eventbus.Hub
+
 	pollInterval time.Duration
 	testEvery    time.Duration
 
 	startOnce sync.Once
 	triggerCh chan struct{}
 
-	mu          sync.Mutex
-	initialized bool
-	lastStatus  map[string]string
+	mu               sync.Mutex
+	initialized      bool
+	lastStatus       map[string]string
+	notifiedSessions map[string]bool
 }
 
-func newPushService(cfg Config, menuData MenuDataLoader) (pushServiceAPI, error) {
+func newPushService(cfg Config, menuData MenuDataLoader, eb *eventbus.EventBus, eh *eventbus.Hub) (pushServiceAPI, error) {
 	publicKey := strings.TrimSpace(cfg.PushVAPIDPublicKey)
 	privateKey := strings.TrimSpace(cfg.PushVAPIDPrivateKey)
 
@@ -378,19 +384,22 @@ func newPushService(cfg Config, menuData MenuDataLoader) (pushServiceAPI, error)
 	}
 
 	return &pushService{
-		enabled:      true,
-		publicKey:    publicKey,
-		privateKey:   privateKey,
-		subject:      subject,
-		profile:      session.GetEffectiveProfile(cfg.Profile),
-		token:        strings.TrimSpace(cfg.Token),
-		menuData:     menuData,
-		store:        store,
-		sender:       &vapidPushSender{subject: subject, publicKey: publicKey, privateKey: privateKey},
-		pollInterval: defaultPushPollInterval,
-		testEvery:    cfg.PushTestInterval,
-		triggerCh:    make(chan struct{}, 1),
-		lastStatus:   make(map[string]string),
+		enabled:          true,
+		publicKey:        publicKey,
+		privateKey:       privateKey,
+		subject:          subject,
+		profile:          session.GetEffectiveProfile(cfg.Profile),
+		token:            strings.TrimSpace(cfg.Token),
+		menuData:         menuData,
+		store:            store,
+		sender:           &vapidPushSender{subject: subject, publicKey: publicKey, privateKey: privateKey},
+		eventBus:         eb,
+		eventHub:         eh,
+		pollInterval:     defaultPushPollInterval,
+		testEvery:        cfg.PushTestInterval,
+		triggerCh:        make(chan struct{}, 1),
+		lastStatus:       make(map[string]string),
+		notifiedSessions: make(map[string]bool),
 	}, nil
 }
 
@@ -462,8 +471,23 @@ func (p *pushService) UpdateSubscriptionFocus(ctx context.Context, endpoint stri
 var pushLog = logging.ForComponent(logging.CompWeb)
 
 func (p *pushService) run(ctx context.Context) {
+	// Fallback poll ticker catches any events missed by the EventBus.
 	ticker := time.NewTicker(p.pollInterval)
 	defer ticker.Stop()
+
+	// Subscribe to EventBus for immediate status-change notifications.
+	eventCh := make(chan struct{}, 1)
+	if p.eventBus != nil {
+		unsub := p.eventBus.Subscribe(func(e eventbus.Event) {
+			if e.Type == eventbus.EventSessionStatusChanged {
+				select {
+				case eventCh <- struct{}{}:
+				default:
+				}
+			}
+		})
+		defer unsub()
+	}
 
 	var testTicker *time.Ticker
 	var testTick <-chan time.Time
@@ -481,6 +505,8 @@ func (p *pushService) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-eventCh:
+			p.syncOnce(ctx)
 		case <-ticker.C:
 			p.syncOnce(ctx)
 		case <-p.triggerCh:
@@ -510,6 +536,7 @@ func (p *pushService) syncOnce(ctx context.Context) {
 	}
 
 	transitions := make([]pushTransition, 0)
+	dismissals := make([]pushTransition, 0)
 
 	p.mu.Lock()
 	if !p.initialized {
@@ -524,14 +551,39 @@ func (p *pushService) syncOnce(ctx context.Context) {
 		if prev == status {
 			continue
 		}
-		if status != "waiting" && status != "error" && status != "idle" {
-			continue
-		}
 
 		sessionMeta := sessions[sessionID]
 		if sessionMeta == nil {
 			continue
 		}
+
+		// Check if session was previously notified and has now left waiting/error.
+		if p.notifiedSessions[sessionID] && status != "waiting" && status != "error" {
+			dismissals = append(dismissals, pushTransition{
+				Profile: snapshot.Profile,
+				Session: sessionMeta,
+				Status:  status,
+			})
+			delete(p.notifiedSessions, sessionID)
+			pushLog.Debug("push_dismiss",
+				slog.String("session", sessionID),
+				slog.String("profile", snapshot.Profile),
+				slog.String("from", prev),
+				slog.String("to", status))
+		}
+
+		if status != "waiting" && status != "error" && status != "idle" {
+			continue
+		}
+
+		// Track sessions that transition TO waiting/error for dismiss tracking.
+		if status == "waiting" || status == "error" {
+			if p.notifiedSessions == nil {
+				p.notifiedSessions = make(map[string]bool)
+			}
+			p.notifiedSessions[sessionID] = true
+		}
+
 		transitions = append(transitions, pushTransition{
 			Profile: snapshot.Profile,
 			Session: sessionMeta,
@@ -544,9 +596,19 @@ func (p *pushService) syncOnce(ctx context.Context) {
 			slog.String("to", status))
 	}
 
+	// Check for sessions that disappeared entirely while notified.
+	for sessionID := range p.notifiedSessions {
+		if _, exists := current[sessionID]; !exists {
+			delete(p.notifiedSessions, sessionID)
+		}
+	}
+
 	p.lastStatus = current
 	p.mu.Unlock()
 
+	for _, tr := range dismissals {
+		p.sendDismiss(ctx, tr)
+	}
 	for _, tr := range transitions {
 		p.notifySubscribers(ctx, tr)
 	}
@@ -565,10 +627,17 @@ func (p *pushService) notifySubscribers(ctx context.Context, tr pushTransition) 
 	if len(subs) == 0 {
 		return
 	}
+
+	// Log connected browser clients for suppression diagnostics.
+	connectedClients := 0
+	if p.eventHub != nil {
+		connectedClients = len(p.eventHub.ConnectedClientIDs())
+	}
 	pushLog.Debug("push_notifying",
 		slog.String("session", tr.Session.ID),
 		slog.String("status", tr.Status),
-		slog.Int("subscribers", len(subs)))
+		slog.Int("subscribers", len(subs)),
+		slog.Int("connected_browsers", connectedClients))
 
 	msg := pushMessage{
 		Title:      pushTitleForStatus(tr),
@@ -615,6 +684,63 @@ func (p *pushService) notifySubscribers(ctx context.Context, tr pushTransition) 
 			slog.Int("http_status", statusCode),
 			slog.String("session", tr.Session.ID),
 			slog.String("status_change", tr.Status),
+			slog.String("error", err.Error()))
+		if statusCode == http.StatusGone || statusCode == http.StatusNotFound {
+			_ = p.store.RemoveByEndpoint(ctx, sub.Endpoint)
+		}
+	}
+}
+
+func (p *pushService) sendDismiss(ctx context.Context, tr pushTransition) {
+	if p == nil || p.store == nil || p.sender == nil || tr.Session == nil {
+		return
+	}
+
+	subs, err := p.store.List(ctx)
+	if err != nil {
+		pushLog.Error("push_dismiss_list_failed", slog.String("error", err.Error()))
+		return
+	}
+	if len(subs) == 0 {
+		return
+	}
+
+	// Use a tag prefix that matches the original notification tags.
+	// The service worker will close notifications with tags matching this session.
+	msg := pushMessage{
+		Type:      "dismiss",
+		Tag:       fmt.Sprintf("agentdeck-%s", tr.Session.ID),
+		SessionID: tr.Session.ID,
+		Session:   tr.Session.Title,
+		Status:    tr.Status,
+		Profile:   tr.Profile,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		pushLog.Error("push_dismiss_marshal_failed", slog.String("error", err.Error()))
+		return
+	}
+
+	pushLog.Debug("push_dismiss_sending",
+		slog.String("session", tr.Session.ID),
+		slog.Int("subscribers", len(subs)))
+
+	for _, sub := range subs {
+		statusCode, err := p.sender.Send(payload, sub)
+		if err == nil {
+			pushLog.Debug("push_dismiss_sent",
+				slog.String("endpoint", endpointForLog(sub.Endpoint)),
+				slog.Int("http_status", statusCode),
+				slog.String("session", tr.Session.ID))
+			continue
+		}
+
+		pushLog.Error("push_dismiss_send_failed",
+			slog.String("endpoint", sub.Endpoint),
+			slog.Int("http_status", statusCode),
+			slog.String("session", tr.Session.ID),
 			slog.String("error", err.Error()))
 		if statusCode == http.StatusGone || statusCode == http.StatusNotFound {
 			_ = p.store.RemoveByEndpoint(ctx, sub.Endpoint)
