@@ -57,6 +57,19 @@ func BuildDAG(entries []Entry) (*DAGResult, error) {
 			LineIndex:  e.LineIndex,
 			Entry:      e,
 		}
+
+		// Handle duplicate UUIDs (possible in append-only logs with retries):
+		// remove the old parent→child edge before overwriting.
+		if old, exists := nodeMap[e.UUID]; exists && old.ParentUUID != "" {
+			siblings := childrenMap[old.ParentUUID]
+			for idx, id := range siblings {
+				if id == old.UUID {
+					childrenMap[old.ParentUUID] = append(siblings[:idx], siblings[idx+1:]...)
+					break
+				}
+			}
+		}
+
 		nodeMap[e.UUID] = node
 
 		parent := e.ParentUUID
@@ -75,6 +88,9 @@ func BuildDAG(entries []Entry) (*DAGResult, error) {
 
 	branchCount := len(tips)
 
+	// Defensive: branchCount == 0 is unreachable for valid acyclic input
+	// (every finite DAG has at least one leaf), but guards against malformed
+	// data where all nodes form a cycle.
 	if branchCount == 0 {
 		return &DAGResult{
 			TotalNodes: len(nodeMap),
@@ -106,7 +122,10 @@ func BuildDAG(entries []Entry) (*DAGResult, error) {
 		branch = append(branch, current)
 
 		parentID := current.ParentUUID
-		// For compact_boundary entries, fall back to LogicalParentUUID.
+		// For compact_boundary entries, fall back to LogicalParentUUID when
+		// ParentUUID is empty. In Claude Code's format, compact_boundary nodes
+		// have an empty ParentUUID and use LogicalParentUUID to link to the
+		// pre-compaction ancestor.
 		if parentID == "" && current.Entry.LogicalParentUUID != "" && current.Entry.Type == "compact_boundary" {
 			parentID = current.Entry.LogicalParentUUID
 		}

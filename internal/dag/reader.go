@@ -49,17 +49,29 @@ func ReadSession(sessionDir string) ([]SessionMessage, error) {
 		return nil, nil
 	}
 
-	// Sort by mtime descending, pick most recent.
-	sort.Slice(candidates, func(i, j int) bool {
-		si, _ := os.Stat(candidates[i])
-		sj, _ := os.Stat(candidates[j])
-		if si == nil || sj == nil {
-			return false
+	// Stat all files once before sorting to avoid repeated os.Stat calls
+	// inside the comparator and to ensure a consistent sort order.
+	type candidate struct {
+		path  string
+		mtime time.Time
+	}
+	var cs []candidate
+	for _, path := range candidates {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
 		}
-		return si.ModTime().After(sj.ModTime())
+		cs = append(cs, candidate{path: path, mtime: info.ModTime()})
+	}
+	if len(cs) == 0 {
+		return nil, nil
+	}
+
+	sort.Slice(cs, func(i, j int) bool {
+		return cs[i].mtime.After(cs[j].mtime)
 	})
 
-	selected := candidates[0]
+	selected := cs[0].path
 
 	// Parse each line as Entry.
 	entries, err := parseJSONL(selected)
