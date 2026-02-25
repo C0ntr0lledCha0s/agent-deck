@@ -12,17 +12,46 @@ const (
 	PhaseReview     Phase = "review"
 )
 
-// TaskStatus represents the current state of a task.
+// TaskStatus represents the workflow stage of a task (kanban column).
 type TaskStatus string
 
 const (
-	TaskStatusThinking TaskStatus = "thinking"
-	TaskStatusWaiting  TaskStatus = "waiting"
+	TaskStatusBacklog  TaskStatus = "backlog"
+	TaskStatusPlanning TaskStatus = "planning"
 	TaskStatusRunning  TaskStatus = "running"
-	TaskStatusIdle     TaskStatus = "idle"
-	TaskStatusError    TaskStatus = "error"
-	TaskStatusComplete TaskStatus = "complete"
+	TaskStatusReview   TaskStatus = "review"
+	TaskStatusDone     TaskStatus = "done"
 )
+
+// AgentStatus represents what Claude is doing right now.
+type AgentStatus string
+
+const (
+	AgentStatusThinking AgentStatus = "thinking"
+	AgentStatusWaiting  AgentStatus = "waiting"
+	AgentStatusRunning  AgentStatus = "running"
+	AgentStatusIdle     AgentStatus = "idle"
+	AgentStatusError    AgentStatus = "error"
+	AgentStatusComplete AgentStatus = "complete"
+)
+
+// DiffInfo tracks file change statistics for a task.
+type DiffInfo struct {
+	Files int `json:"files"`
+	Add   int `json:"add"`
+	Del   int `json:"del"`
+}
+
+// Session represents one phase-session within a task's lifecycle.
+type Session struct {
+	ID              string `json:"id"`
+	Phase           Phase  `json:"phase"`
+	Status          string `json:"status"` // "active" | "complete"
+	Duration        string `json:"duration"`
+	Artifact        string `json:"artifact,omitempty"`
+	Summary         string `json:"summary,omitempty"`
+	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
+}
 
 // Task wraps a session with orchestration metadata.
 type Task struct {
@@ -34,6 +63,13 @@ type Task struct {
 	Description  string     `json:"description"`
 	Phase        Phase      `json:"phase"`
 	Branch       string     `json:"branch,omitempty"`
+	Skills       []string    `json:"skills,omitempty"`
+	MCPs         []string    `json:"mcps,omitempty"`
+	Diff         *DiffInfo   `json:"diff,omitempty"`
+	Container    string      `json:"container,omitempty"`
+	AskQuestion  string      `json:"askQuestion,omitempty"`
+	AgentStatus  AgentStatus `json:"agentStatus"`
+	Sessions     []Session   `json:"sessions,omitempty"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	UpdatedAt    time.Time  `json:"updatedAt"`
 	ParentTaskID string     `json:"parentTaskId,omitempty"`
