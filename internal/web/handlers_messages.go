@@ -155,6 +155,9 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 // For example: /home/user/myproject -> -home-user-myproject
 //
 // Returns the directory path if found, or empty string if not found.
+// Note: no fallback scan is performed because the encoding is lossy
+// (dashes in path component names are indistinguishable from separators),
+// so decoding would produce false matches for paths containing hyphens.
 func findClaudeSessionDir(projectPath string) string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -163,27 +166,10 @@ func findClaudeSessionDir(projectPath string) string {
 
 	claudeProjectsDir := filepath.Join(homeDir, ".claude", "projects")
 
-	// Try the expected encoded directory name first.
 	encoded := encodeProjectPath(projectPath)
 	candidate := filepath.Join(claudeProjectsDir, encoded)
 	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 		return candidate
-	}
-
-	// Fallback: scan the projects directory for a matching decoded path.
-	entries, err := os.ReadDir(claudeProjectsDir)
-	if err != nil {
-		return ""
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		decoded := decodeProjectPath(entry.Name())
-		if decoded == projectPath {
-			return filepath.Join(claudeProjectsDir, entry.Name())
-		}
 	}
 
 	return ""
@@ -193,27 +179,15 @@ func findClaudeSessionDir(projectPath string) string {
 // directory encoding. The absolute path has its leading "/" removed, all
 // remaining "/" replaced with "-", and is prepended with "-".
 //
+// This encoding is lossy: paths containing literal hyphens in directory names
+// produce the same encoding as paths with "/" separators in those positions.
+// For example, both /home/user/my-project and /home/user/my/project encode to
+// -home-user-my-project. This matches Claude Code's own encoding, so the
+// fast-path os.Stat lookup will find the correct directory.
+//
 // Example: /home/user/myproject -> -home-user-myproject
 func encodeProjectPath(path string) string {
-	// Normalize and clean the path.
 	path = filepath.Clean(path)
-
-	// Remove leading "/" and replace all "/" with "-", then prepend "-".
 	trimmed := strings.TrimPrefix(path, "/")
 	return "-" + strings.ReplaceAll(trimmed, "/", "-")
-}
-
-// decodeProjectPath reverses Claude Code's dash-separated encoding back to
-// a filesystem path. The leading "-" is removed and the remaining "-"
-// characters are replaced with "/", then "/" is prepended.
-//
-// Example: -home-user-myproject -> /home/user/myproject
-func decodeProjectPath(encoded string) string {
-	if !strings.HasPrefix(encoded, "-") {
-		return encoded
-	}
-
-	// Remove leading "-" and replace "-" with "/".
-	trimmed := strings.TrimPrefix(encoded, "-")
-	return "/" + strings.ReplaceAll(trimmed, "-", "/")
 }
