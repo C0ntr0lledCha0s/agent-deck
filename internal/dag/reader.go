@@ -26,14 +26,86 @@ type SessionMessage struct {
 	LineIndex  int
 }
 
+// SessionReadResult contains the active branch messages plus DAG metadata.
+type SessionReadResult struct {
+	Messages   []SessionMessage
+	TotalNodes int
+}
+
 // ReadSession reads the most recent JSONL conversation file from sessionDir,
 // builds the DAG, resolves the active branch, and returns the messages in order.
 // Files named agent-*.jsonl are skipped (subagent conversations).
 func ReadSession(sessionDir string) ([]SessionMessage, error) {
-	// Glob *.jsonl, filter out agent-*.jsonl.
+	result, err := ReadSessionFull(sessionDir)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	return result.Messages, nil
+}
+
+// ReadSessionFull is like ReadSession but also returns DAG metadata such as
+// the total number of nodes across all branches.
+func ReadSessionFull(sessionDir string) (*SessionReadResult, error) {
+	selected, err := selectJSONLFile(sessionDir)
+	if err != nil {
+		return nil, err
+	}
+	if selected == "" {
+		return nil, nil
+	}
+
+	// Parse each line as Entry.
+	entries, err := parseJSONL(selected)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", filepath.Base(selected), err)
+	}
+
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	// Build DAG to get active branch.
+	dagResult, err := BuildDAG(entries)
+	if err != nil {
+		return nil, fmt.Errorf("build DAG: %w", err)
+	}
+
+	if len(dagResult.ActiveBranch) == 0 {
+		return &SessionReadResult{TotalNodes: dagResult.TotalNodes}, nil
+	}
+
+	// Convert to SessionMessages.
+	msgs := make([]SessionMessage, 0, len(dagResult.ActiveBranch))
+	for _, node := range dagResult.ActiveBranch {
+		e := node.Entry
+		role, content := extractRoleContent(e.Message)
+		msgs = append(msgs, SessionMessage{
+			UUID:       e.UUID,
+			ParentUUID: e.ParentUUID,
+			Type:       e.Type,
+			Role:       role,
+			Content:    content,
+			Message:    e.Message,
+			Timestamp:  e.Timestamp,
+			LineIndex:  e.LineIndex,
+		})
+	}
+
+	return &SessionReadResult{
+		Messages:   msgs,
+		TotalNodes: dagResult.TotalNodes,
+	}, nil
+}
+
+// selectJSONLFile finds the most recently modified *.jsonl file in sessionDir,
+// skipping agent-*.jsonl subagent files.
+func selectJSONLFile(sessionDir string) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(sessionDir, "*.jsonl"))
 	if err != nil {
-		return nil, fmt.Errorf("glob jsonl files: %w", err)
+		return "", fmt.Errorf("glob jsonl files: %w", err)
 	}
 
 	var candidates []string
@@ -46,7 +118,7 @@ func ReadSession(sessionDir string) ([]SessionMessage, error) {
 	}
 
 	if len(candidates) == 0 {
-		return nil, nil
+		return "", nil
 	}
 
 	// Stat all files once before sorting to avoid repeated os.Stat calls
@@ -64,53 +136,14 @@ func ReadSession(sessionDir string) ([]SessionMessage, error) {
 		cs = append(cs, candidate{path: path, mtime: info.ModTime()})
 	}
 	if len(cs) == 0 {
-		return nil, nil
+		return "", nil
 	}
 
 	sort.Slice(cs, func(i, j int) bool {
 		return cs[i].mtime.After(cs[j].mtime)
 	})
 
-	selected := cs[0].path
-
-	// Parse each line as Entry.
-	entries, err := parseJSONL(selected)
-	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", filepath.Base(selected), err)
-	}
-
-	if len(entries) == 0 {
-		return nil, nil
-	}
-
-	// Build DAG to get active branch.
-	result, err := BuildDAG(entries)
-	if err != nil {
-		return nil, fmt.Errorf("build DAG: %w", err)
-	}
-
-	if len(result.ActiveBranch) == 0 {
-		return nil, nil
-	}
-
-	// Convert to SessionMessages.
-	msgs := make([]SessionMessage, 0, len(result.ActiveBranch))
-	for _, node := range result.ActiveBranch {
-		e := node.Entry
-		role, content := extractRoleContent(e.Message)
-		msgs = append(msgs, SessionMessage{
-			UUID:       e.UUID,
-			ParentUUID: e.ParentUUID,
-			Type:       e.Type,
-			Role:       role,
-			Content:    content,
-			Message:    e.Message,
-			Timestamp:  e.Timestamp,
-			LineIndex:  e.LineIndex,
-		})
-	}
-
-	return msgs, nil
+	return cs[0].path, nil
 }
 
 // parseJSONL reads a JSONL file and returns parsed entries, skipping malformed lines.

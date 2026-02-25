@@ -133,6 +133,7 @@ func NewServer(cfg Config) *Server {
 	})
 	mux.HandleFunc("/api/menu", s.handleMenu)
 	mux.HandleFunc("/api/session/", s.handleSessionByID)
+	mux.HandleFunc("/api/messages/", s.handleSessionMessages)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
 	mux.HandleFunc("/api/projects", s.handleProjects)
