@@ -11,6 +11,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var eventBusHeartbeatInterval = 30 * time.Second
+
 // handleEventBusWS upgrades an HTTP request to a WebSocket connection and
 // registers the client with the EventBus Hub for channel-based event routing.
 func (s *Server) handleEventBusWS(w http.ResponseWriter, r *http.Request) {
@@ -30,9 +32,13 @@ func (s *Server) handleEventBusWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	// Wrap the raw conn in a mutex-protected writer to serialize writes
+	// from the heartbeat goroutine, Hub broadcasts, and error responses.
+	writer := newWSConnWriter(conn)
+
 	webLog := logging.ForComponent(logging.CompWeb)
 
-	clientID := s.eventHub.RegisterClient(conn)
+	clientID := s.eventHub.RegisterClient(writer)
 	webLog.Info("eventbus_client_connected", slog.String("client_id", clientID))
 	defer func() {
 		s.eventHub.UnregisterClient(clientID)
@@ -40,14 +46,14 @@ func (s *Server) handleEventBusWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Send a welcome message so the client knows the connection is ready.
-	_ = conn.WriteJSON(eventbus.ServerMessage{Type: "connected"})
+	_ = writer.WriteJSON(eventbus.ServerMessage{Type: "connected"})
 
 	// Start a heartbeat goroutine that sends periodic pings to keep the
 	// connection alive and detect stale clients.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(eventBusHeartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -56,7 +62,7 @@ func (s *Server) handleEventBusWS(w http.ResponseWriter, r *http.Request) {
 			case <-done:
 				return
 			case <-ticker.C:
-				if err := conn.WriteJSON(eventbus.ServerMessage{Type: "heartbeat"}); err != nil {
+				if err := writer.WriteJSON(eventbus.ServerMessage{Type: "heartbeat"}); err != nil {
 					return
 				}
 			}
@@ -84,7 +90,7 @@ func (s *Server) handleEventBusWS(w http.ResponseWriter, r *http.Request) {
 			webLog.Debug("eventbus_message_error",
 				slog.String("client_id", clientID),
 				slog.String("error", err.Error()))
-			_ = conn.WriteJSON(eventbus.ServerMessage{
+			_ = writer.WriteJSON(eventbus.ServerMessage{
 				Type: "error",
 				Data: err.Error(),
 			})

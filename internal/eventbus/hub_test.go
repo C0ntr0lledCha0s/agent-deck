@@ -12,17 +12,17 @@ import (
 // mockConn implements WSConn for testing.
 type mockConn struct {
 	mu       sync.Mutex
-	messages []interface{}
+	messages []any
 }
 
-func (m *mockConn) WriteJSON(v interface{}) error {
+func (m *mockConn) WriteJSON(v any) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, v)
 	return nil
 }
 
-func (m *mockConn) lastMessage() interface{} {
+func (m *mockConn) lastMessage() any {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.messages) == 0 {
@@ -328,6 +328,20 @@ func TestHub_HandleMessageUnknownType(t *testing.T) {
 	raw := json.RawMessage(`{"type":"invalid"}`)
 	err := hub.HandleMessage(clientID, raw)
 	require.Error(t, err)
+}
+
+func TestHub_HandleSubscribeInvalidChannel(t *testing.T) {
+	bus := New()
+	hub := NewHub(bus)
+	defer hub.Close()
+
+	conn := &mockConn{}
+	clientID := hub.RegisterClient(conn)
+
+	raw := json.RawMessage(`{"type":"subscribe","channel":"bogus"}`)
+	err := hub.HandleMessage(clientID, raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown channel")
 }
 
 func TestHub_Close(t *testing.T) {
