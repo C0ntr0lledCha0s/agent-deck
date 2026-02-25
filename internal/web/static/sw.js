@@ -88,7 +88,7 @@ self.addEventListener("push", (event) => {
     event.waitUntil(
       self.registration.getNotifications().then((notifications) => {
         for (const n of notifications) {
-          if (n.tag && n.tag.startsWith(payload.tag || "")) {
+          if (payload.tag && n.tag && n.tag.startsWith(payload.tag)) {
             n.close()
           }
         }

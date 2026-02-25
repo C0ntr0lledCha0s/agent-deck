@@ -728,6 +728,9 @@ func (p *pushService) sendDismiss(ctx context.Context, tr pushTransition) {
 		slog.Int("subscribers", len(subs)))
 
 	for _, sub := range subs {
+		if !shouldNotifySubscription(sub, tr) {
+			continue
+		}
 		statusCode, err := p.sender.Send(payload, sub)
 		if err == nil {
 			pushLog.Debug("push_dismiss_sent",
