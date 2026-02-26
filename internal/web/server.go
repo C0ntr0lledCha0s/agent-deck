@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
+	"github.com/asheshgoplani/agent-deck/internal/hub/workspace"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -48,11 +49,12 @@ type Server struct {
 	menuSubscribers   map[chan struct{}]struct{}
 
 	// Hub dashboard state.
-	hubTasks        *hub.TaskStore
-	hubProjects     *hub.ProjectStore
-	containerExec   hub.ContainerExecutor
-	sessionLauncher *hub.SessionLauncher
-	hubBridge       *HubSessionBridge
+	hubTasks         *hub.TaskStore
+	hubProjects      *hub.ProjectStore
+	containerRuntime workspace.ContainerRuntime
+	containerExec    hub.ContainerExecutor
+	sessionLauncher  *hub.SessionLauncher
+	hubBridge        *HubSessionBridge
 
 	taskSubscribersMu sync.Mutex
 	taskSubscribers   map[chan struct{}]struct{}
@@ -95,8 +97,13 @@ func NewServer(cfg Config) *Server {
 	}
 
 	// Initialize container executor for Docker-based task execution.
-	s.containerExec = &hub.DockerExecutor{}
-	s.sessionLauncher = &hub.SessionLauncher{Executor: s.containerExec}
+	if dockerRT, err := workspace.NewDockerRuntime(); err != nil {
+		webLog.Warn("docker_disabled", slog.String("error", err.Error()))
+	} else {
+		s.containerRuntime = dockerRT
+		s.containerExec = &hub.RuntimeExecutor{Runtime: dockerRT}
+		s.sessionLauncher = &hub.SessionLauncher{Executor: s.containerExec}
+	}
 
 	// Initialize hub-session bridge for local session orchestration.
 	if s.hubTasks != nil && s.hubProjects != nil {
