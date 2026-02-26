@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
+	"github.com/asheshgoplani/agent-deck/internal/hub/workspace"
 )
 
 // handleTasks dispatches GET /api/tasks and POST /api/tasks.
@@ -938,6 +939,320 @@ func (s *Server) handleTaskTransition(w http.ResponseWriter, r *http.Request, ta
 	writeJSON(w, http.StatusOK, startPhaseResponse{
 		SessionID: result.SessionID,
 		Phase:     result.Phase,
+	})
+}
+
+// --- Workspace API endpoints ---
+
+// workspaceView is the API representation of a project enriched with container status.
+type workspaceView struct {
+	Name            string  `json:"name"`
+	Repo            string  `json:"repo,omitempty"`
+	Path            string  `json:"path"`
+	Image           string  `json:"image,omitempty"`
+	Container       string  `json:"container,omitempty"`
+	ContainerStatus string  `json:"containerStatus"`
+	CPUPercent      float64 `json:"cpuPercent,omitempty"`
+	MemUsage        int64   `json:"memUsage,omitempty"`
+	MemLimit        int64   `json:"memLimit,omitempty"`
+	ActiveTasks     int     `json:"activeTasks"`
+}
+
+type workspacesListResponse struct {
+	Workspaces []workspaceView `json:"workspaces"`
+}
+
+// handleWorkspaces dispatches GET /api/workspaces.
+func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.handleWorkspacesList(w, r)
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	}
+}
+
+// handleWorkspacesList serves GET /api/workspaces — lists all projects enriched with container status.
+func (s *Server) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
+	if s.hubProjects == nil {
+		writeJSON(w, http.StatusOK, workspacesListResponse{Workspaces: []workspaceView{}})
+		return
+	}
+
+	projects, err := s.hubProjects.List()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load projects")
+		return
+	}
+
+	// Count active tasks per project.
+	taskCounts := make(map[string]int)
+	if s.hubTasks != nil {
+		if tasks, taskErr := s.hubTasks.List(); taskErr == nil {
+			for _, t := range tasks {
+				if t.Status == hub.TaskStatusRunning || t.Status == hub.TaskStatusPlanning {
+					taskCounts[t.Project]++
+				}
+			}
+		}
+	}
+
+	views := make([]workspaceView, 0, len(projects))
+	for _, p := range projects {
+		v := workspaceView{
+			Name:            p.Name,
+			Repo:            p.Repo,
+			Path:            p.Path,
+			Image:           p.Image,
+			Container:       p.Container,
+			ContainerStatus: workspace.StatusNotCreated,
+			ActiveTasks:     taskCounts[p.Name],
+		}
+
+		// Query container status if a container name is set and runtime is available.
+		if p.Container != "" && s.containerRuntime != nil {
+			if state, stErr := s.containerRuntime.Status(r.Context(), p.Container); stErr == nil {
+				v.ContainerStatus = state.Status
+			}
+		}
+
+		views = append(views, v)
+	}
+
+	writeJSON(w, http.StatusOK, workspacesListResponse{Workspaces: views})
+}
+
+// handleWorkspaceByName dispatches /api/workspaces/{name}/{action}.
+func (s *Server) handleWorkspaceByName(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+
+	const prefix = "/api/workspaces/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+
+	remaining := strings.TrimPrefix(r.URL.Path, prefix)
+	parts := strings.SplitN(remaining, "/", 2)
+	name := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	if name == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "workspace name is required")
+		return
+	}
+
+	switch action {
+	case "start":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleWorkspaceStart(w, r, name)
+	case "stop":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleWorkspaceStop(w, r, name)
+	case "remove":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleWorkspaceRemove(w, r, name)
+	case "stats":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleWorkspaceStats(w, r, name)
+	default:
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+	}
+}
+
+// handleWorkspaceStart serves POST /api/workspaces/{name}/start.
+func (s *Server) handleWorkspaceStart(w http.ResponseWriter, r *http.Request, name string) {
+	if s.containerRuntime == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "container runtime not available")
+		return
+	}
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	ctx := r.Context()
+	containerName := project.Container
+
+	// If no container exists yet, create one from the project config.
+	if containerName == "" {
+		if project.Image == "" {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project has no image configured")
+			return
+		}
+		containerName = workspace.ContainerNameForProject(project.Name)
+
+		var envSlice []string
+		for k, v := range project.Env {
+			envSlice = append(envSlice, k+"="+v)
+		}
+		var mounts []workspace.Mount
+		for _, v := range project.Volumes {
+			mounts = append(mounts, workspace.Mount{
+				Source:   v.Host,
+				Target:   v.Container,
+				ReadOnly: v.ReadOnly,
+			})
+		}
+
+		opts := workspace.CreateOpts{
+			Name:     containerName,
+			Image:    project.Image,
+			Env:      envSlice,
+			Mounts:   mounts,
+			NanoCPUs: int64(project.CPULimit * 1e9),
+			Memory:   project.MemoryLimit,
+			Labels: map[string]string{
+				"agentdeck.project": project.Name,
+			},
+		}
+
+		if _, createErr := s.containerRuntime.Create(ctx, opts); createErr != nil {
+			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create container: "+createErr.Error())
+			return
+		}
+		project.Container = containerName
+		_ = s.hubProjects.Save(project)
+	}
+
+	if startErr := s.containerRuntime.Start(ctx, containerName); startErr != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to start container: "+startErr.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "started", "container": containerName})
+}
+
+// handleWorkspaceStop serves POST /api/workspaces/{name}/stop.
+func (s *Server) handleWorkspaceStop(w http.ResponseWriter, r *http.Request, name string) {
+	if s.containerRuntime == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "container runtime not available")
+		return
+	}
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	if project.Container == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project has no container")
+		return
+	}
+
+	if stopErr := s.containerRuntime.Stop(r.Context(), project.Container, 30); stopErr != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to stop container: "+stopErr.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped", "container": project.Container})
+}
+
+// handleWorkspaceRemove serves POST /api/workspaces/{name}/remove.
+func (s *Server) handleWorkspaceRemove(w http.ResponseWriter, r *http.Request, name string) {
+	if s.containerRuntime == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "container runtime not available")
+		return
+	}
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	if project.Container == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project has no container")
+		return
+	}
+
+	if rmErr := s.containerRuntime.Remove(r.Context(), project.Container, true); rmErr != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove container: "+rmErr.Error())
+		return
+	}
+
+	// Clear the container reference from the project.
+	project.Container = ""
+	_ = s.hubProjects.Save(project)
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+type workspaceStatsResponse struct {
+	CPUPercent float64 `json:"cpuPercent"`
+	MemUsage   uint64  `json:"memUsage"`
+	MemLimit   uint64  `json:"memLimit"`
+}
+
+// handleWorkspaceStats serves GET /api/workspaces/{name}/stats.
+func (s *Server) handleWorkspaceStats(w http.ResponseWriter, r *http.Request, name string) {
+	if s.containerRuntime == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "container runtime not available")
+		return
+	}
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	if project.Container == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project has no container")
+		return
+	}
+
+	stats, statsErr := s.containerRuntime.Stats(r.Context(), project.Container)
+	if statsErr != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get stats: "+statsErr.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, workspaceStatsResponse{
+		CPUPercent: stats.CPUPercent,
+		MemUsage:   stats.MemUsage,
+		MemLimit:   stats.MemLimit,
 	})
 }
 

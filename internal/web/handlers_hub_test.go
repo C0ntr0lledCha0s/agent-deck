@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
+	"github.com/asheshgoplani/agent-deck/internal/hub/workspace"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1580,4 +1582,113 @@ func TestFullHubSessionFlow(t *testing.T) {
 	assert.Equal(t, "Explored approaches", getResp.Task.Sessions[0].Summary)
 	assert.Equal(t, "active", getResp.Task.Sessions[1].Status)
 	assert.Equal(t, hub.PhasePlan, getResp.Task.Phase)
+}
+
+// --- mockContainerRuntime for workspace tests ---
+
+type mockContainerRuntime struct {
+	createCalls int
+	startCalls  int
+	stopCalls   int
+	removeCalls int
+	createID    string
+	state       workspace.ContainerState
+	stats       workspace.ContainerStats
+}
+
+func (m *mockContainerRuntime) Create(_ context.Context, opts workspace.CreateOpts) (string, error) {
+	m.createCalls++
+	if m.createID != "" {
+		return m.createID, nil
+	}
+	return opts.Name, nil
+}
+
+func (m *mockContainerRuntime) Start(_ context.Context, _ string) error {
+	m.startCalls++
+	return nil
+}
+
+func (m *mockContainerRuntime) Stop(_ context.Context, _ string, _ int) error {
+	m.stopCalls++
+	return nil
+}
+
+func (m *mockContainerRuntime) Remove(_ context.Context, _ string, _ bool) error {
+	m.removeCalls++
+	return nil
+}
+
+func (m *mockContainerRuntime) Status(_ context.Context, _ string) (workspace.ContainerState, error) {
+	return m.state, nil
+}
+
+func (m *mockContainerRuntime) Stats(_ context.Context, _ string) (workspace.ContainerStats, error) {
+	return m.stats, nil
+}
+
+func (m *mockContainerRuntime) Exec(_ context.Context, _ string, _ []string, _ io.Reader) ([]byte, int, error) {
+	return nil, 0, nil
+}
+
+// --- Workspace endpoint tests ---
+
+func TestWorkspacesListEmpty(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var resp workspacesListResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	assert.Empty(t, resp.Workspaces)
+}
+
+func TestWorkspacesListWithProject(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	mock := &mockContainerRuntime{
+		state: workspace.ContainerState{Status: workspace.StatusRunning},
+	}
+	srv.containerRuntime = mock
+
+	// Create a project with a container name.
+	project := &hub.Project{
+		Name:      "my-app",
+		Repo:      "github.com/org/my-app",
+		Path:      "/home/user/my-app",
+		Image:     "ubuntu:24.04",
+		Container: "agentdeck-my-app",
+	}
+	require.NoError(t, srv.hubProjects.Save(project))
+
+	// Create an active task for the project.
+	task := &hub.Task{
+		Project:     "my-app",
+		Description: "Fix bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+		AgentStatus: hub.AgentStatusThinking,
+	}
+	require.NoError(t, srv.hubTasks.Save(task))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var resp workspacesListResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	require.Len(t, resp.Workspaces, 1)
+
+	ws := resp.Workspaces[0]
+	assert.Equal(t, "my-app", ws.Name)
+	assert.Equal(t, "github.com/org/my-app", ws.Repo)
+	assert.Equal(t, "agentdeck-my-app", ws.Container)
+	assert.Equal(t, workspace.StatusRunning, ws.ContainerStatus)
+	assert.Equal(t, "ubuntu:24.04", ws.Image)
+	assert.Equal(t, 1, ws.ActiveTasks)
 }

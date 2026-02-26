@@ -144,6 +144,8 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProjectByName)
+	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
+	mux.HandleFunc("/api/workspaces/", s.handleWorkspaceByName)
 	mux.HandleFunc("/api/route", s.handleRoute)
 	mux.HandleFunc("/api/push/config", s.handlePushConfig)
 	mux.HandleFunc("/api/push/subscribe", s.handlePushSubscribe)
