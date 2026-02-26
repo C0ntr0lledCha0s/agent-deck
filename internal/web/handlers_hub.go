@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -382,6 +383,43 @@ func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID 
 					slog.String("session", task.TmuxSession),
 					slog.String("error", sendErr.Error()))
 			}
+		}
+	}
+
+	// Attempt to deliver input to local tmux session via send-keys.
+	// The task's active session ClaudeSessionID maps to a session.Instance ID
+	// in the menu snapshot, which has the tmux session name.
+	if s.menuData != nil {
+		for i := len(task.Sessions) - 1; i >= 0; i-- {
+			sess := task.Sessions[i]
+			if sess.Status != "active" || sess.ClaudeSessionID == "" {
+				continue
+			}
+			snapshot, snapErr := s.menuData.LoadMenuSnapshot()
+			if snapErr != nil {
+				break
+			}
+			menuSess, found := snapshotSessionByID(snapshot, sess.ClaudeSessionID)
+			if !found || menuSess.TmuxSession == "" {
+				break
+			}
+			cmd := exec.Command("tmux", "send-keys", "-l", "-t", menuSess.TmuxSession, "--", req.Input)
+			if sendErr := cmd.Run(); sendErr != nil {
+				slog.Warn("local_send_keys_failed",
+					slog.String("task", taskID),
+					slog.String("tmux", menuSess.TmuxSession),
+					slog.String("error", sendErr.Error()))
+				break
+			}
+			// Send Enter after the text
+			enterCmd := exec.Command("tmux", "send-keys", "-t", menuSess.TmuxSession, "Enter")
+			_ = enterCmd.Run()
+
+			writeJSON(w, http.StatusOK, taskInputResponse{
+				Status:  "delivered",
+				Message: "input sent to local session",
+			})
+			return
 		}
 	}
 
