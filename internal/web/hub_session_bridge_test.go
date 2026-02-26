@@ -2,7 +2,10 @@ package web
 
 import (
 	"context"
+	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -143,8 +146,6 @@ func TestGetActiveSession_NoActive(t *testing.T) {
 }
 
 func TestSaveInstance_PersistsToStorage(t *testing.T) {
-	t.Setenv("AGENTDECK_PROFILE", "_test")
-
 	hubDir := t.TempDir()
 	ts, err := hub.NewTaskStore(hubDir)
 	require.NoError(t, err)
@@ -336,4 +337,56 @@ func TestStartPhase_NilLauncherNoError(t *testing.T) {
 	result, err := bridge.StartPhase(task.ID, hub.PhasePlan)
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.SessionID)
+}
+
+// TestStartPhase_LocalProject_CreatesTmuxSession verifies that StartPhase creates a real
+// tmux session for local (non-container) projects via the goroutine that calls StartWithMessage.
+func TestStartPhase_LocalProject_CreatesTmuxSession(t *testing.T) {
+	skipIfNoTmuxServer(t)
+
+	bridge, ts, ps := newTestBridge(t)
+
+	proj := &hub.Project{Name: "tmux-test-proj", Path: "/tmp", Keywords: []string{"test"}}
+	require.NoError(t, ps.Save(proj))
+
+	task := &hub.Task{
+		Project:     "tmux-test-proj",
+		Description: "tmux integration test",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusBacklog,
+		AgentStatus: hub.AgentStatusIdle,
+	}
+	require.NoError(t, ts.Save(task))
+
+	result, err := bridge.StartPhase(task.ID, hub.PhaseExecute)
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.SessionID)
+
+	// Poll for tmux session creation (goroutine is async).
+	// The session name is derived from the title which contains the task ID.
+	var found bool
+	for i := 0; i < 20; i++ { // 2s max
+		time.Sleep(100 * time.Millisecond)
+		out, cmdErr := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+		if cmdErr != nil {
+			continue
+		}
+		if strings.Contains(string(out), task.ID) {
+			found = true
+			break
+		}
+	}
+
+	// Cleanup: kill any tmux sessions created by this test
+	t.Cleanup(func() {
+		out, _ := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+		for _, name := range strings.Split(string(out), "\n") {
+			if strings.Contains(name, "tmux-integration-test") ||
+				strings.Contains(name, task.ID) {
+				_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+			}
+		}
+	})
+
+	assert.True(t, found, "tmux session should exist after StartPhase for local project")
 }
