@@ -12,6 +12,7 @@
     menuEvents: null,
     terminal: null,
     terminalWs: null,
+    previewStream: null,
     fitAddon: null,
     chatMode: null,
     chatModeOverride: null,
@@ -1663,28 +1664,23 @@
     if (!container) return
     clearChildren(container)
 
-    // Resolve session identity for the WebSocket connection:
-    // The WS handler matches by session.Instance ID, not tmux session name.
-    // 1. Try live session from session map (real session.Instance)
-    // 2. Fall back to task.tmuxSession (container-based legacy)
-    var wsSessionId = null
-    var liveSession = getActiveSessionForTask(task)
-    if (liveSession && liveSession.id) {
-      wsSessionId = liveSession.id
-    } else if (task.tmuxSession) {
-      wsSessionId = task.tmuxSession
-    }
-
-    if (!wsSessionId) {
-      var placeholder = el("div", "terminal-placeholder", "No session attached.")
-      container.appendChild(placeholder)
-      return
-    }
-
     // Check if Terminal (xterm.js) is available
     if (typeof Terminal === "undefined") {
       var fallback = el("div", "terminal-placeholder", "Terminal emulator not available. Check xterm.js assets.")
       container.appendChild(fallback)
+      return
+    }
+
+    // Resolve session identity for the WebSocket connection:
+    // The WS handler matches by session.Instance ID, not tmux session name.
+    // 1. Try live session from session map (real session.Instance)
+    // 2. Container sessions use SSE preview (no local session.Instance)
+    var liveSession = getActiveSessionForTask(task)
+    var isContainerTask = !liveSession && task.tmuxSession
+
+    if (!liveSession && !isContainerTask) {
+      var placeholder = el("div", "terminal-placeholder", "No session attached.")
+      container.appendChild(placeholder)
       return
     }
 
@@ -1706,8 +1702,19 @@
     state.terminal = term
     state.fitAddon = fitAddon
 
+    if (isContainerTask) {
+      // Container sessions: stream output via SSE preview endpoint
+      connectPreviewStream(task, term)
+    } else {
+      // Local sessions: connect via WebSocket for live PTY
+      connectWebSocket(liveSession.id, term)
+    }
+  }
+
+  // Connect terminal to WebSocket for local sessions with live PTY streaming.
+  function connectWebSocket(sessionId, term) {
     var protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(wsSessionId)
+    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(sessionId)
     if (state.authToken) wsUrl += "?token=" + encodeURIComponent(state.authToken)
     var ws = new WebSocket(wsUrl)
     state.terminalWs = ws
@@ -1726,10 +1733,34 @@
     })
   }
 
+  // Connect terminal to SSE preview stream for container-based sessions.
+  function connectPreviewStream(task, term) {
+    var previewUrl = apiPathWithToken("/api/tasks/" + encodeURIComponent(task.id) + "/preview")
+    var es = new EventSource(previewUrl)
+    state.previewStream = es
+
+    es.addEventListener("preview", function (e) {
+      try {
+        var data = JSON.parse(e.data)
+        if (data.output) {
+          term.reset()
+          term.write(data.output)
+        }
+      } catch (err) { /* ignore parse errors */ }
+    })
+    es.onerror = function () {
+      // SSE auto-reconnects; nothing to do here
+    }
+  }
+
   function disconnectTerminal() {
     if (state.terminalWs) {
       state.terminalWs.close()
       state.terminalWs = null
+    }
+    if (state.previewStream) {
+      state.previewStream.close()
+      state.previewStream = null
     }
     if (state.terminal) {
       state.terminal.dispose()
