@@ -367,6 +367,12 @@ func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID 
 		return
 	}
 
+	const maxInputLen = 64 * 1024 // 64 KB
+	if len(req.Input) > maxInputLen {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "input exceeds maximum length")
+		return
+	}
+
 	// Attempt to deliver input to container tmux session.
 	if s.sessionLauncher != nil && task.TmuxSession != "" {
 		container := s.containerForProject(task.Project)
@@ -773,7 +779,11 @@ func (s *Server) handleProjectsCreate(w http.ResponseWriter, r *http.Request) {
 					slog.String("error", startErr.Error()))
 			}
 			project.Container = containerName
-			_ = s.hubProjects.Save(project) // Re-save with container name.
+			if saveErr := s.hubProjects.Save(project); saveErr != nil {
+				slog.Error("project_save_after_provision_failed",
+					slog.String("project", project.Name),
+					slog.String("error", saveErr.Error()))
+			}
 		}
 	}
 
@@ -1294,7 +1304,11 @@ func (s *Server) handleWorkspaceStart(w http.ResponseWriter, r *http.Request, na
 			return
 		}
 		project.Container = containerName
-		_ = s.hubProjects.Save(project)
+		if saveErr := s.hubProjects.Save(project); saveErr != nil {
+			slog.Error("project_save_after_create_failed",
+				slog.String("project", project.Name),
+				slog.String("error", saveErr.Error()))
+		}
 	}
 
 	if startErr := s.containerRuntime.Start(ctx, containerName); startErr != nil {
@@ -1367,7 +1381,11 @@ func (s *Server) handleWorkspaceRemove(w http.ResponseWriter, r *http.Request, n
 
 	// Clear the container reference from the project.
 	project.Container = ""
-	_ = s.hubProjects.Save(project)
+	if saveErr := s.hubProjects.Save(project); saveErr != nil {
+		slog.Error("project_save_after_remove_failed",
+			slog.String("project", project.Name),
+			slog.String("error", saveErr.Error()))
+	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
