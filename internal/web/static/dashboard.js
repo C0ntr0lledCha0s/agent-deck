@@ -1656,18 +1656,19 @@
     if (!container) return
     clearChildren(container)
 
-    // Resolve the tmux session name:
+    // Resolve session identity for the WebSocket connection:
+    // The WS handler matches by session.Instance ID, not tmux session name.
     // 1. Try live session from session map (real session.Instance)
     // 2. Fall back to task.tmuxSession (container-based legacy)
-    var tmuxName = null
+    var wsSessionId = null
     var liveSession = getActiveSessionForTask(task)
-    if (liveSession && liveSession.tmuxSession) {
-      tmuxName = liveSession.tmuxSession
+    if (liveSession && liveSession.id) {
+      wsSessionId = liveSession.id
     } else if (task.tmuxSession) {
-      tmuxName = task.tmuxSession
+      wsSessionId = task.tmuxSession
     }
 
-    if (!tmuxName) {
+    if (!wsSessionId) {
       var placeholder = el("div", "terminal-placeholder", "No session attached.")
       container.appendChild(placeholder)
       return
@@ -1699,7 +1700,7 @@
     state.fitAddon = fitAddon
 
     var protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(tmuxName)
+    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(wsSessionId)
     if (state.authToken) wsUrl += "?token=" + encodeURIComponent(state.authToken)
     var ws = new WebSocket(wsUrl)
     state.terminalWs = ws
@@ -1707,14 +1708,14 @@
     ws.binaryType = "arraybuffer"
     ws.onmessage = function (e) {
       if (e.data instanceof ArrayBuffer) {
+        // Binary frames are PTY output — write to terminal
         term.write(new Uint8Array(e.data))
-      } else {
-        term.write(e.data)
       }
+      // String frames are JSON control messages (status, error, etc.) — ignore for terminal
     }
     ws.onclose = function () { state.terminalWs = null }
     term.onData(function (data) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(data)
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data: data }))
     })
   }
 

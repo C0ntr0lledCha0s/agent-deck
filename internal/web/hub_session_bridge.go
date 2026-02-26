@@ -68,6 +68,7 @@ func (b *HubSessionBridge) StartPhase(taskID string, phase hub.Phase) (*StartPha
 	// Create session instance
 	title := fmt.Sprintf("[%s] %s: %s", task.ID, phaseLabel(phase), truncate(task.Description, 40))
 	inst := session.NewInstanceWithGroupAndTool(title, projectPath, "hub", "claude")
+	inst.Command = "claude"
 
 	// Add session entry to task
 	hubSession := hub.Session{
