@@ -197,6 +197,21 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	return nil, fmt.Sprintf("session '%s' not found", identifier), ErrCodeNotFound
 }
 
+// hasHeadlessFlag checks if --headless is present in args before flag parsing.
+// This must happen before the FlagSet sees the args, since --headless is handled
+// at the dispatch level and stripped before passing to buildWebServer.
+func hasHeadlessFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--headless" || a == "-headless" {
+			return true
+		}
+		if a == "--" {
+			break
+		}
+	}
+	return false
+}
+
 // GetCurrentSessionID detects the current agent-deck session from tmux environment
 // Returns session ID or empty string if not in an agent-deck session
 func GetCurrentSessionID() string {

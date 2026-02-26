@@ -1,10 +1,13 @@
 package web
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -15,16 +18,19 @@ type HubSessionBridge struct {
 	projects    *hub.ProjectStore
 	openStorage storageOpener
 	profile     string
-	mu          sync.Mutex // serializes saveInstance to prevent load-append-save races
+	launcher    *hub.SessionLauncher // optional; sends phase prompt to container sessions
+	mu          sync.Mutex           // serializes saveInstance to prevent load-append-save races
 }
 
 // NewHubSessionBridge creates a bridge for the given profile.
-func NewHubSessionBridge(profile string, tasks *hub.TaskStore, projects *hub.ProjectStore) *HubSessionBridge {
+// The launcher is optional — when non-nil it enables sending phase prompts to container sessions.
+func NewHubSessionBridge(profile string, tasks *hub.TaskStore, projects *hub.ProjectStore, launcher *hub.SessionLauncher) *HubSessionBridge {
 	return &HubSessionBridge{
 		tasks:       tasks,
 		projects:    projects,
 		openStorage: defaultStorageOpener,
 		profile:     session.GetEffectiveProfile(profile),
+		launcher:    launcher,
 	}
 }
 
@@ -36,7 +42,8 @@ type StartPhaseResult struct {
 
 // StartPhase creates a new session.Instance for the given task phase.
 // It links the session to the task's Sessions slice and updates task status.
-// The session is created but NOT started (no tmux) — the caller decides when to start.
+// For local (non-container) projects, the tmux session is started asynchronously
+// via StartWithMessage. For container projects, the phase prompt is sent via the launcher.
 func (b *HubSessionBridge) StartPhase(taskID string, phase hub.Phase) (*StartPhaseResult, error) {
 	if b.tasks == nil {
 		return nil, fmt.Errorf("task store not initialized")
@@ -61,6 +68,7 @@ func (b *HubSessionBridge) StartPhase(taskID string, phase hub.Phase) (*StartPha
 	// Create session instance
 	title := fmt.Sprintf("[%s] %s: %s", task.ID, phaseLabel(phase), truncate(task.Description, 40))
 	inst := session.NewInstanceWithGroupAndTool(title, projectPath, "hub", "claude")
+	inst.Command = "claude"
 
 	// Add session entry to task
 	hubSession := hub.Session{
@@ -81,6 +89,38 @@ func (b *HubSessionBridge) StartPhase(taskID string, phase hub.Phase) (*StartPha
 	// Save instance to session storage
 	if err := b.saveInstance(inst); err != nil {
 		return nil, fmt.Errorf("save session instance: %w", err)
+	}
+
+	// Send phase prompt to container-based sessions.
+	if b.launcher != nil && b.projects != nil {
+		if proj, projErr := b.projects.Get(task.Project); projErr == nil && proj.Container != "" {
+			tmuxSession := "agent-" + task.ID
+			prompt := phasePrompt(phase, task.Description)
+			if sendErr := b.launcher.SendInput(context.Background(), proj.Container, tmuxSession, prompt); sendErr != nil {
+				logging.ForComponent(logging.CompWeb).Warn("phase_prompt_failed",
+					slog.String("task", task.ID),
+					slog.String("phase", string(phase)),
+					slog.String("error", sendErr.Error()),
+				)
+				// Non-fatal: the session is created, just the prompt wasn't sent.
+			}
+		}
+	}
+
+	// Start tmux session for local (non-container) projects.
+	if b.projects != nil {
+		if proj, projErr := b.projects.Get(task.Project); projErr == nil && proj.Container == "" {
+			prompt := phasePrompt(phase, task.Description)
+			go func() {
+				if startErr := inst.StartWithMessage(prompt); startErr != nil {
+					logging.ForComponent(logging.CompWeb).Warn("local_session_start_failed",
+						slog.String("task", task.ID),
+						slog.String("phase", string(phase)),
+						slog.String("error", startErr.Error()),
+					)
+				}
+			}()
+		}
 	}
 
 	return &StartPhaseResult{
@@ -164,7 +204,6 @@ func (b *HubSessionBridge) saveInstance(inst *session.Instance) error {
 }
 
 // phasePrompt returns the initial prompt to send to a new session for the given phase.
-// TODO: Wire to tmux SendKeys / StartWithMessage when session launch is implemented.
 func phasePrompt(phase hub.Phase, description string) string {
 	switch phase {
 	case hub.PhaseBrainstorm:

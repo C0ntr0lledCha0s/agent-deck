@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
+	"github.com/asheshgoplani/agent-deck/internal/hub/workspace"
 )
 
 // handleTasks dispatches GET /api/tasks and POST /api/tasks.
@@ -110,6 +112,21 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 	if err := s.hubTasks.Save(task); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create task")
 		return
+	}
+
+	// Auto-start a stopped container before launching the session.
+	if s.containerRuntime != nil && s.hubProjects != nil {
+		if proj, projErr := s.hubProjects.Get(task.Project); projErr == nil && proj.Container != "" && proj.Image != "" {
+			state, _ := s.containerRuntime.Status(r.Context(), proj.Container)
+			if state.Status == workspace.StatusStopped {
+				if startErr := s.containerRuntime.Start(r.Context(), proj.Container); startErr != nil {
+					slog.Warn("container_auto_start_failed",
+						slog.String("task", task.ID),
+						slog.String("container", proj.Container),
+						slog.String("error", startErr.Error()))
+				}
+			}
+		}
 	}
 
 	// Auto-start phase session via bridge (local sessions).
@@ -350,6 +367,12 @@ func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID 
 		return
 	}
 
+	const maxInputLen = 64 * 1024 // 64 KB
+	if len(req.Input) > maxInputLen {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "input exceeds maximum length")
+		return
+	}
+
 	// Attempt to deliver input to container tmux session.
 	if s.sessionLauncher != nil && task.TmuxSession != "" {
 		container := s.containerForProject(task.Project)
@@ -366,6 +389,43 @@ func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID 
 					slog.String("session", task.TmuxSession),
 					slog.String("error", sendErr.Error()))
 			}
+		}
+	}
+
+	// Attempt to deliver input to local tmux session via send-keys.
+	// The task's active session ClaudeSessionID maps to a session.Instance ID
+	// in the menu snapshot, which has the tmux session name.
+	if s.menuData != nil {
+		for i := len(task.Sessions) - 1; i >= 0; i-- {
+			sess := task.Sessions[i]
+			if sess.Status != "active" || sess.ClaudeSessionID == "" {
+				continue
+			}
+			snapshot, snapErr := s.menuData.LoadMenuSnapshot()
+			if snapErr != nil {
+				break
+			}
+			menuSess, found := snapshotSessionByID(snapshot, sess.ClaudeSessionID)
+			if !found || menuSess.TmuxSession == "" {
+				break
+			}
+			cmd := exec.Command("tmux", "send-keys", "-l", "-t", menuSess.TmuxSession, "--", req.Input)
+			if sendErr := cmd.Run(); sendErr != nil {
+				slog.Warn("local_send_keys_failed",
+					slog.String("task", taskID),
+					slog.String("tmux", menuSess.TmuxSession),
+					slog.String("error", sendErr.Error()))
+				break
+			}
+			// Send Enter after the text
+			enterCmd := exec.Command("tmux", "send-keys", "-t", menuSess.TmuxSession, "Enter")
+			_ = enterCmd.Run()
+
+			writeJSON(w, http.StatusOK, taskInputResponse{
+				Status:  "delivered",
+				Message: "input sent to local session",
+			})
+			return
 		}
 	}
 
@@ -613,6 +673,31 @@ func (s *Server) handleProjectsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve template defaults if specified.
+	if req.Template != "" && s.hubTemplates != nil {
+		tmpl, tmplErr := s.hubTemplates.Get(req.Template)
+		if tmplErr != nil {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "template not found: "+req.Template)
+			return
+		}
+		// Apply template defaults where request values are empty/zero.
+		if req.Image == "" {
+			req.Image = tmpl.Image
+		}
+		if req.CPULimit == 0 {
+			req.CPULimit = tmpl.CPUDefault
+		}
+		if req.MemoryLimit == 0 {
+			req.MemoryLimit = tmpl.MemoryDefault
+		}
+		if len(req.Volumes) == 0 {
+			req.Volumes = tmpl.Volumes
+		}
+		if len(req.Env) == 0 {
+			req.Env = tmpl.Env
+		}
+	}
+
 	// Check for duplicates.
 	if existing, _ := s.hubProjects.Get(name); existing != nil {
 		writeAPIError(w, http.StatusConflict, "CONFLICT", "project already exists: "+name)
@@ -636,11 +721,70 @@ func (s *Server) handleProjectsCreate(w http.ResponseWriter, r *http.Request) {
 		Keywords:    req.Keywords,
 		Container:   req.Container,
 		DefaultMCPs: req.DefaultMCPs,
+		Image:       req.Image,
+		CPULimit:    req.CPULimit,
+		MemoryLimit: req.MemoryLimit,
+		Volumes:     req.Volumes,
+		Env:         req.Env,
+		Template:    req.Template,
 	}
 
 	if err := s.hubProjects.Save(project); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create project")
 		return
+	}
+
+	// Auto-provision container if an image is specified and a runtime is available.
+	if project.Image != "" && s.containerRuntime != nil {
+		containerName := workspace.ContainerNameForProject(project.Name)
+
+		// Build environment variables from map.
+		var envSlice []string
+		for k, v := range project.Env {
+			envSlice = append(envSlice, k+"="+v)
+		}
+
+		// Convert VolumeMount to workspace.Mount.
+		var mounts []workspace.Mount
+		for _, v := range project.Volumes {
+			mounts = append(mounts, workspace.Mount{
+				Source:   v.Host,
+				Target:   v.Container,
+				ReadOnly: v.ReadOnly,
+			})
+		}
+
+		opts := workspace.CreateOpts{
+			Name:     containerName,
+			Image:    project.Image,
+			Env:      envSlice,
+			Mounts:   mounts,
+			NanoCPUs: int64(project.CPULimit * 1e9),
+			Memory:   project.MemoryLimit,
+			Labels: map[string]string{
+				"agentdeck.project": project.Name,
+			},
+		}
+
+		if _, createErr := s.containerRuntime.Create(r.Context(), opts); createErr != nil {
+			slog.Warn("auto_provision_create_failed",
+				slog.String("project", project.Name),
+				slog.String("image", project.Image),
+				slog.String("error", createErr.Error()))
+		} else {
+			if startErr := s.containerRuntime.Start(r.Context(), containerName); startErr != nil {
+				slog.Warn("auto_provision_start_failed",
+					slog.String("project", project.Name),
+					slog.String("container", containerName),
+					slog.String("error", startErr.Error()))
+			}
+			project.Container = containerName
+			if saveErr := s.hubProjects.Save(project); saveErr != nil {
+				slog.Error("project_save_after_provision_failed",
+					slog.String("project", project.Name),
+					slog.String("error", saveErr.Error()))
+			}
+		}
 	}
 
 	s.notifyTaskChanged()
@@ -672,7 +816,7 @@ func (s *Server) handleProjectByName(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		s.handleProjectUpdate(w, r, name)
 	case http.MethodDelete:
-		s.handleProjectDelete(w, name)
+		s.handleProjectDelete(w, r, name)
 	default:
 		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 	}
@@ -736,10 +880,22 @@ func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request, nam
 }
 
 // handleProjectDelete serves DELETE /api/projects/{name}.
-func (s *Server) handleProjectDelete(w http.ResponseWriter, name string) {
+func (s *Server) handleProjectDelete(w http.ResponseWriter, r *http.Request, name string) {
 	if s.hubProjects == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
 		return
+	}
+
+	// Optionally remove the associated container.
+	if r.URL.Query().Get("removeContainer") == "true" && s.containerRuntime != nil {
+		if project, err := s.hubProjects.Get(name); err == nil && project.Container != "" {
+			if rmErr := s.containerRuntime.Remove(r.Context(), project.Container, true); rmErr != nil {
+				slog.Warn("container_remove_on_project_delete",
+					slog.String("project", name),
+					slog.String("container", project.Container),
+					slog.String("error", rmErr.Error()))
+			}
+		}
 	}
 
 	if err := s.hubProjects.Delete(name); err != nil {
@@ -774,12 +930,18 @@ type projectDetailResponse struct {
 }
 
 type createProjectRequest struct {
-	Repo        string   `json:"repo"`
-	Name        string   `json:"name,omitempty"`
-	Path        string   `json:"path,omitempty"`
-	Keywords    []string `json:"keywords,omitempty"`
-	Container   string   `json:"container,omitempty"`
-	DefaultMCPs []string `json:"defaultMcps,omitempty"`
+	Repo        string            `json:"repo"`
+	Name        string            `json:"name,omitempty"`
+	Path        string            `json:"path,omitempty"`
+	Keywords    []string          `json:"keywords,omitempty"`
+	Container   string            `json:"container,omitempty"`
+	DefaultMCPs []string          `json:"defaultMcps,omitempty"`
+	Image       string            `json:"image,omitempty"`
+	CPULimit    float64           `json:"cpuLimit,omitempty"`
+	MemoryLimit int64             `json:"memoryLimit,omitempty"`
+	Volumes     []hub.VolumeMount `json:"volumes,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	Template    string            `json:"template,omitempty"`
 }
 
 type updateProjectRequest struct {
@@ -941,6 +1103,334 @@ func (s *Server) handleTaskTransition(w http.ResponseWriter, r *http.Request, ta
 	})
 }
 
+// --- Workspace API endpoints ---
+
+// workspaceView is the API representation of a project enriched with container status.
+type workspaceView struct {
+	Name            string  `json:"name"`
+	Repo            string  `json:"repo,omitempty"`
+	Path            string  `json:"path"`
+	Image           string  `json:"image,omitempty"`
+	Container       string  `json:"container,omitempty"`
+	ContainerStatus string  `json:"containerStatus"`
+	CPUPercent      float64 `json:"cpuPercent,omitempty"`
+	MemUsage        int64   `json:"memUsage,omitempty"`
+	MemLimit        int64   `json:"memLimit,omitempty"`
+	ActiveTasks     int     `json:"activeTasks"`
+	Template        string  `json:"template,omitempty"`
+}
+
+type workspacesListResponse struct {
+	Workspaces []workspaceView `json:"workspaces"`
+}
+
+// handleWorkspaces dispatches GET /api/workspaces.
+func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.handleWorkspacesList(w, r)
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	}
+}
+
+// handleWorkspacesList serves GET /api/workspaces — lists all projects enriched with container status.
+func (s *Server) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
+	if s.hubProjects == nil {
+		writeJSON(w, http.StatusOK, workspacesListResponse{Workspaces: []workspaceView{}})
+		return
+	}
+
+	projects, err := s.hubProjects.List()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load projects")
+		return
+	}
+
+	// Count active tasks per project.
+	taskCounts := make(map[string]int)
+	if s.hubTasks != nil {
+		if tasks, taskErr := s.hubTasks.List(); taskErr == nil {
+			for _, t := range tasks {
+				if t.Status == hub.TaskStatusRunning || t.Status == hub.TaskStatusPlanning {
+					taskCounts[t.Project]++
+				}
+			}
+		}
+	}
+
+	views := make([]workspaceView, 0, len(projects))
+	for _, p := range projects {
+		v := workspaceView{
+			Name:            p.Name,
+			Repo:            p.Repo,
+			Path:            p.Path,
+			Image:           p.Image,
+			Container:       p.Container,
+			ContainerStatus: workspace.StatusNotCreated,
+			ActiveTasks:     taskCounts[p.Name],
+			Template:        p.Template,
+		}
+
+		// Query container status if a container name is set and runtime is available.
+		if p.Container != "" && s.containerRuntime != nil {
+			if state, stErr := s.containerRuntime.Status(r.Context(), p.Container); stErr == nil {
+				v.ContainerStatus = state.Status
+			}
+		}
+
+		views = append(views, v)
+	}
+
+	writeJSON(w, http.StatusOK, workspacesListResponse{Workspaces: views})
+}
+
+// handleWorkspaceByName dispatches /api/workspaces/{name}/{action}.
+func (s *Server) handleWorkspaceByName(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+
+	const prefix = "/api/workspaces/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+
+	remaining := strings.TrimPrefix(r.URL.Path, prefix)
+	parts := strings.SplitN(remaining, "/", 2)
+	name := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	if name == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "workspace name is required")
+		return
+	}
+
+	switch action {
+	case "start":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleWorkspaceStart(w, r, name)
+	case "stop":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleWorkspaceStop(w, r, name)
+	case "remove":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleWorkspaceRemove(w, r, name)
+	case "stats":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleWorkspaceStats(w, r, name)
+	default:
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+	}
+}
+
+// handleWorkspaceStart serves POST /api/workspaces/{name}/start.
+func (s *Server) handleWorkspaceStart(w http.ResponseWriter, r *http.Request, name string) {
+	if s.containerRuntime == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "container runtime not available")
+		return
+	}
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	ctx := r.Context()
+	containerName := project.Container
+
+	// If no container exists yet, create one from the project config.
+	if containerName == "" {
+		if project.Image == "" {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project has no image configured")
+			return
+		}
+		containerName = workspace.ContainerNameForProject(project.Name)
+
+		var envSlice []string
+		for k, v := range project.Env {
+			envSlice = append(envSlice, k+"="+v)
+		}
+		var mounts []workspace.Mount
+		for _, v := range project.Volumes {
+			mounts = append(mounts, workspace.Mount{
+				Source:   v.Host,
+				Target:   v.Container,
+				ReadOnly: v.ReadOnly,
+			})
+		}
+
+		opts := workspace.CreateOpts{
+			Name:     containerName,
+			Image:    project.Image,
+			Env:      envSlice,
+			Mounts:   mounts,
+			NanoCPUs: int64(project.CPULimit * 1e9),
+			Memory:   project.MemoryLimit,
+			Labels: map[string]string{
+				"agentdeck.project": project.Name,
+			},
+		}
+
+		if _, createErr := s.containerRuntime.Create(ctx, opts); createErr != nil {
+			slog.Error("workspace_create_failed", slog.String("container", containerName), slog.String("error", createErr.Error()))
+			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create container")
+			return
+		}
+		project.Container = containerName
+		if saveErr := s.hubProjects.Save(project); saveErr != nil {
+			slog.Error("project_save_after_create_failed",
+				slog.String("project", project.Name),
+				slog.String("error", saveErr.Error()))
+		}
+	}
+
+	if startErr := s.containerRuntime.Start(ctx, containerName); startErr != nil {
+		slog.Error("workspace_start_failed", slog.String("container", containerName), slog.String("error", startErr.Error()))
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to start container")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "started", "container": containerName})
+}
+
+// handleWorkspaceStop serves POST /api/workspaces/{name}/stop.
+func (s *Server) handleWorkspaceStop(w http.ResponseWriter, r *http.Request, name string) {
+	if s.containerRuntime == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "container runtime not available")
+		return
+	}
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	if project.Container == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project has no container")
+		return
+	}
+
+	if stopErr := s.containerRuntime.Stop(r.Context(), project.Container, 30); stopErr != nil {
+		slog.Error("workspace_stop_failed", slog.String("container", project.Container), slog.String("error", stopErr.Error()))
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to stop container")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped", "container": project.Container})
+}
+
+// handleWorkspaceRemove serves POST /api/workspaces/{name}/remove.
+func (s *Server) handleWorkspaceRemove(w http.ResponseWriter, r *http.Request, name string) {
+	if s.containerRuntime == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "container runtime not available")
+		return
+	}
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	if project.Container == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project has no container")
+		return
+	}
+
+	if rmErr := s.containerRuntime.Remove(r.Context(), project.Container, true); rmErr != nil {
+		slog.Error("workspace_remove_failed", slog.String("container", project.Container), slog.String("error", rmErr.Error()))
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove container")
+		return
+	}
+
+	// Clear the container reference from the project.
+	project.Container = ""
+	if saveErr := s.hubProjects.Save(project); saveErr != nil {
+		slog.Error("project_save_after_remove_failed",
+			slog.String("project", project.Name),
+			slog.String("error", saveErr.Error()))
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+type workspaceStatsResponse struct {
+	CPUPercent float64 `json:"cpuPercent"`
+	MemUsage   uint64  `json:"memUsage"`
+	MemLimit   uint64  `json:"memLimit"`
+}
+
+// handleWorkspaceStats serves GET /api/workspaces/{name}/stats.
+func (s *Server) handleWorkspaceStats(w http.ResponseWriter, r *http.Request, name string) {
+	if s.containerRuntime == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "container runtime not available")
+		return
+	}
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	if project.Container == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project has no container")
+		return
+	}
+
+	stats, statsErr := s.containerRuntime.Stats(r.Context(), project.Container)
+	if statsErr != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get stats: "+statsErr.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, workspaceStatsResponse{
+		CPUPercent: stats.CPUPercent,
+		MemUsage:   stats.MemUsage,
+		MemLimit:   stats.MemLimit,
+	})
+}
+
 // handleRoute serves POST /api/route.
 func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRequest(r) {
@@ -985,4 +1475,175 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 		Confidence:      result.Confidence,
 		MatchedKeywords: result.MatchedKeywords,
 	})
+}
+
+// ── Template API handlers ─────────────────────────────────────────────
+
+type templatesListResponse struct {
+	Templates []*hub.Template `json:"templates"`
+}
+
+type templateDetailResponse struct {
+	Template *hub.Template `json:"template"`
+}
+
+type createTemplateRequest struct {
+	Name          string            `json:"name"`
+	Description   string            `json:"description,omitempty"`
+	Image         string            `json:"image"`
+	CPUDefault    float64           `json:"cpuDefault,omitempty"`
+	MemoryDefault int64             `json:"memoryDefault,omitempty"`
+	Volumes       []hub.VolumeMount `json:"volumes,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Tags          []string          `json:"tags,omitempty"`
+}
+
+// handleTemplates dispatches GET /api/templates and POST /api/templates.
+func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.handleTemplatesList(w, r)
+	case http.MethodPost:
+		s.handleTemplatesCreate(w, r)
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	}
+}
+
+// handleTemplatesList serves GET /api/templates.
+func (s *Server) handleTemplatesList(w http.ResponseWriter, r *http.Request) {
+	if s.hubTemplates == nil {
+		writeJSON(w, http.StatusOK, templatesListResponse{Templates: []*hub.Template{}})
+		return
+	}
+
+	templates, err := s.hubTemplates.List()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load templates")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, templatesListResponse{Templates: templates})
+}
+
+// handleTemplatesCreate serves POST /api/templates.
+func (s *Server) handleTemplatesCreate(w http.ResponseWriter, r *http.Request) {
+	if s.hubTemplates == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	var req createTemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	if req.Name == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "name is required")
+		return
+	}
+	if req.Image == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "image is required")
+		return
+	}
+
+	// Check for duplicates (including built-ins).
+	if existing, _ := s.hubTemplates.Get(req.Name); existing != nil {
+		writeAPIError(w, http.StatusConflict, "CONFLICT", "template already exists: "+req.Name)
+		return
+	}
+
+	tmpl := &hub.Template{
+		Name:          req.Name,
+		Description:   req.Description,
+		Image:         req.Image,
+		CPUDefault:    req.CPUDefault,
+		MemoryDefault: req.MemoryDefault,
+		Volumes:       req.Volumes,
+		Env:           req.Env,
+		Tags:          req.Tags,
+	}
+
+	if err := s.hubTemplates.Save(tmpl); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create template")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, templateDetailResponse{Template: tmpl})
+}
+
+// handleTemplateByName dispatches /api/templates/{name} for GET and DELETE.
+func (s *Server) handleTemplateByName(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+
+	const prefix = "/api/templates/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, prefix)
+	if name == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "template name is required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.handleTemplateGet(w, r, name)
+	case http.MethodDelete:
+		s.handleTemplateDelete(w, r, name)
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	}
+}
+
+// handleTemplateGet serves GET /api/templates/{name}.
+func (s *Server) handleTemplateGet(w http.ResponseWriter, _ *http.Request, name string) {
+	if s.hubTemplates == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "template not found")
+		return
+	}
+
+	tmpl, err := s.hubTemplates.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "template not found: "+name)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, templateDetailResponse{Template: tmpl})
+}
+
+// handleTemplateDelete serves DELETE /api/templates/{name}.
+func (s *Server) handleTemplateDelete(w http.ResponseWriter, _ *http.Request, name string) {
+	if s.hubTemplates == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	// Check if it's a built-in template — return 403.
+	tmpl, err := s.hubTemplates.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "template not found: "+name)
+		return
+	}
+	if tmpl.BuiltIn {
+		writeAPIError(w, http.StatusForbidden, "FORBIDDEN", "cannot delete built-in template")
+		return
+	}
+
+	if err := s.hubTemplates.Delete(name); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete template")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

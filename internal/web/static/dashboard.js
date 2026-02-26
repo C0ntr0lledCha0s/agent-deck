@@ -12,10 +12,12 @@
     menuEvents: null,
     terminal: null,
     terminalWs: null,
+    previewStream: null,
     fitAddon: null,
     chatMode: null,
     chatModeOverride: null,
     sessionMap: {},  // menuSession.id → menuSession (from SSE menu events)
+    workspacesSubTab: "workspaces",  // "workspaces" | "templates"
   }
 
   // ── Status metadata ─────────────────────────────────────────────
@@ -136,6 +138,8 @@
       })
       .catch(function (err) {
         console.error("fetchProjects:", err)
+        state.projects = []
+        renderFilterBar()
       })
   }
 
@@ -251,6 +255,7 @@
     if (!view) return
     state.activeView = view
     state.chatModeOverride = null
+    if (view !== "workspaces") state.workspacesSubTab = "workspaces"
     renderSidebar()
     renderTopBar()
     renderView()
@@ -267,7 +272,11 @@
     clearChildren(rightEl)
 
     // View label
-    leftEl.appendChild(el("span", "top-bar-view", state.activeView))
+    var viewLabel = state.activeView
+    if (state.activeView === "workspaces" && state.workspacesSubTab === "templates") {
+      viewLabel = "workspaces / templates"
+    }
+    leftEl.appendChild(el("span", "top-bar-view", viewLabel))
 
     // Breadcrumb for selected task
     var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
@@ -346,6 +355,8 @@
     // Clean up any open popups from previous view
     closeSlashPalette()
     closeModeMenu()
+    // Stop workspace polling when switching away
+    if (state.activeView !== "workspaces") stopWorkspacePolling()
 
     var panels = document.getElementById("panels")
     var placeholder = document.getElementById("view-placeholder")
@@ -740,6 +751,8 @@
   }
 
   // ── Workspaces view ──────────────────────────────────────────────
+  var workspacePollInterval = null
+
   function renderWorkspacesView() {
     var chatBar = document.getElementById("chat-bar")
     var wsEl = document.getElementById("workspaces-view")
@@ -758,43 +771,83 @@
     clearChildren(wsEl)
     wsEl.style.display = ""
 
-    // Fetch workspaces from API (graceful fallback to projects)
+    // Render toggle bar
+    var toggleBar = el("div", "ws-toggle-bar")
+    var wsTab = el("button", "ws-toggle-tab" + (state.workspacesSubTab === "workspaces" ? " ws-toggle-tab--active" : ""), "Workspaces")
+    wsTab.addEventListener("click", function () {
+      state.workspacesSubTab = "workspaces"
+      renderWorkspacesView()
+      renderTopBar()
+    })
+    var tmplTab = el("button", "ws-toggle-tab" + (state.workspacesSubTab === "templates" ? " ws-toggle-tab--active" : ""), "Templates")
+    tmplTab.addEventListener("click", function () {
+      state.workspacesSubTab = "templates"
+      renderWorkspacesView()
+      renderTopBar()
+    })
+    toggleBar.appendChild(wsTab)
+    toggleBar.appendChild(tmplTab)
+    wsEl.appendChild(toggleBar)
+
+    // Content area
+    var contentEl = el("div", "ws-content")
+    wsEl.appendChild(contentEl)
+
+    if (state.workspacesSubTab === "templates") {
+      stopWorkspacePolling()
+      fetchTemplates(contentEl)
+    } else {
+      // Start polling for workspaces
+      stopWorkspacePolling()
+      workspacePollInterval = setInterval(function () {
+        if (state.activeView === "workspaces" && state.workspacesSubTab === "workspaces") {
+          fetchWorkspaces(contentEl)
+        }
+      }, 5000)
+      fetchWorkspaces(contentEl)
+    }
+  }
+
+  function stopWorkspacePolling() {
+    if (workspacePollInterval) {
+      clearInterval(workspacePollInterval)
+      workspacePollInterval = null
+    }
+  }
+
+  function fetchWorkspaces(contentEl) {
     fetch(apiPathWithToken("/api/workspaces"), { headers: authHeaders() })
       .then(function (r) {
         if (!r.ok) throw new Error("workspaces fetch failed: " + r.status)
         return r.json()
       })
       .then(function (data) {
-        buildWorkspacesContent(wsEl, data.workspaces || [])
+        buildWorkspacesContent(contentEl, data.workspaces || [])
       })
       .catch(function () {
-        // No workspaces API — derive from projects
+        // Fallback to projects
         var workspaces = (state.projects || []).map(function (p) {
           return {
             name: p.name,
             desc: p.description || "",
-            template: p.template || "claude-sandbox",
-            status: p.containerStatus || "running",
+            image: p.image || "",
+            containerStatus: p.containerStatus || "not_created",
             path: p.path || "/workspace/" + p.name,
-            cpu: p.cpu || "2.0",
-            mem: p.mem || "2GB",
-            container: p.container || "coder-" + p.name,
+            container: p.container || "",
+            activeTasks: 0,
           }
         })
-        buildWorkspacesContent(wsEl, workspaces)
+        buildWorkspacesContent(contentEl, workspaces)
       })
   }
 
   function buildWorkspacesContent(container, workspaces) {
     clearChildren(container)
 
-    // Section header
-    container.appendChild(el("div", "workspaces-header", "Workspaces \u00B7 OpenTofu"))
-
     if (!workspaces || !workspaces.length) {
       var emptyCard = el("div", "workspace-card")
       emptyCard.appendChild(el("div", "workspace-card-name", "No workspaces configured"))
-      emptyCard.appendChild(el("div", "workspace-card-desc", "Provision a workspace to get started"))
+      emptyCard.appendChild(el("div", "workspace-card-desc", "Add a project to get started"))
       container.appendChild(emptyCard)
     } else {
       for (var i = 0; i < workspaces.length; i++) {
@@ -802,85 +855,276 @@
       }
     }
 
-    // Provision button
-    var provBtn = el("button", "workspace-provision-btn", "+ Provision new workspace (tofu apply)")
+    var provBtn = el("button", "workspace-provision-btn", "+ Add Workspace")
+    provBtn.addEventListener("click", openAddProjectModal)
     container.appendChild(provBtn)
   }
 
   function createWorkspaceCard(ws) {
     var card = el("div", "workspace-card")
-
-    // Top row: name + status badge + start/stop button
     var top = el("div", "workspace-card-top")
-
     top.appendChild(el("span", "workspace-card-name", ws.name))
 
     var actions = el("div", "workspace-card-actions")
+    var isRunning = ws.containerStatus === "running"
+    var isStopped = ws.containerStatus === "stopped"
 
-    // Status badge
-    var isRunning = ws.status === "running"
     var badge = el("span", "workspace-badge")
-    var badgeIcon = el("span", "")
-    badgeIcon.style.color = isRunning ? "var(--accent)" : "var(--text-dim)"
-    badgeIcon.textContent = isRunning ? "\u27F3" : "\u25CB"
-    badge.appendChild(badgeIcon)
-    badge.appendChild(document.createTextNode(" " + (ws.status || "stopped")))
     badge.style.color = isRunning ? "var(--accent)" : "var(--text-dim)"
+    badge.textContent = (isRunning ? "\u27F3 " : "\u25CB ") + (ws.containerStatus || "unknown")
     actions.appendChild(badge)
 
-    // Start / Stop button
     if (isRunning) {
       var stopBtn = el("button", "workspace-btn-stop", "Stop")
-      stopBtn.title = "Stop — coming soon"
-      stopBtn.disabled = true
-      stopBtn.style.opacity = "0.5"
-      stopBtn.style.cursor = "default"
+      stopBtn.addEventListener("click", function () { workspaceAction(ws.name, "stop") })
       actions.appendChild(stopBtn)
-    } else {
+    } else if (isStopped || ws.containerStatus === "not_found") {
       var startBtn = el("button", "workspace-btn-start", "Start")
-      startBtn.title = "Start — coming soon"
-      startBtn.disabled = true
-      startBtn.style.opacity = "0.5"
-      startBtn.style.cursor = "default"
+      startBtn.addEventListener("click", function () { workspaceAction(ws.name, "start") })
       actions.appendChild(startBtn)
     }
 
     top.appendChild(actions)
     card.appendChild(top)
 
-    // Description
-    if (ws.desc) {
-      card.appendChild(el("div", "workspace-card-desc", ws.desc))
+    // Template badge
+    if (ws.template) {
+      var tmplBadge = el("span", "workspace-card-template", "\u25A3 " + ws.template)
+      card.appendChild(tmplBadge)
     }
 
-    // Stats row
-    var stats = el("div", "workspace-card-stats")
-    stats.appendChild(el("span", "", "template: " + (ws.template || "n/a")))
-    stats.appendChild(el("span", "", "cpu: " + (ws.cpu || "n/a")))
-    stats.appendChild(el("span", "", "mem: " + (ws.mem || "n/a")))
-    card.appendChild(stats)
+    // Info rows
+    if (ws.image) card.appendChild(el("div", "workspace-card-desc", "Image: " + ws.image))
 
-    // Container + path
-    var pathLine = el("div", "workspace-card-path")
-    pathLine.textContent = "container: " + (ws.container || "n/a") + " \u00B7 path: " + (ws.path || "n/a")
-    card.appendChild(pathLine)
-
-    // Active agents count
-    var tasks = state.tasks || []
-    var agentCount = 0
-    for (var j = 0; j < tasks.length; j++) {
-      var t = tasks[j]
-      if (t.project === ws.name && t.tmuxSession && t.status !== "done" && t.status !== "backlog") {
-        agentCount++
-      }
+    // Stats bars (only for running containers)
+    if (isRunning && ws.memLimit > 0) {
+      var memPercent = Math.round((ws.memUsage / ws.memLimit) * 100)
+      var statsRow = el("div", "workspace-card-stats")
+      statsRow.appendChild(el("span", "", "CPU: " + (ws.cpuPercent || 0).toFixed(1) + "%"))
+      statsRow.appendChild(el("span", "", "Mem: " + formatBytes(ws.memUsage) + " / " + formatBytes(ws.memLimit) + " (" + memPercent + "%)"))
+      card.appendChild(statsRow)
     }
-    if (agentCount > 0) {
-      card.appendChild(el("div", "workspace-card-agents",
-        agentCount + " active tmux session" + (agentCount > 1 ? "s" : "")
-      ))
+
+    // Path
+    if (ws.path) {
+      var pathLine = el("div", "workspace-card-path")
+      pathLine.textContent = ws.path
+      card.appendChild(pathLine)
+    }
+
+    // Active tasks
+    if (ws.activeTasks > 0) {
+      card.appendChild(el("div", "workspace-card-agents", ws.activeTasks + " active task" + (ws.activeTasks !== 1 ? "s" : "")))
     }
 
     return card
+  }
+
+  function workspaceAction(name, action) {
+    var headers = authHeaders()
+    fetch(apiPathWithToken("/api/workspaces/" + encodeURIComponent(name) + "/" + action), {
+      method: "POST",
+      headers: headers,
+    })
+      .then(function () {
+        // Refresh workspace view
+        if (state.activeView === "workspaces") {
+          var contentEl = document.querySelector(".ws-content")
+          if (contentEl) fetchWorkspaces(contentEl)
+        }
+      })
+      .catch(function (err) {
+        console.error("workspaceAction " + action + ":", err)
+      })
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return "0 B"
+    var units = ["B", "KB", "MB", "GB"]
+    var i = 0
+    var val = bytes
+    while (val >= 1024 && i < units.length - 1) { val /= 1024; i++ }
+    return val.toFixed(i > 1 ? 1 : 0) + " " + units[i]
+  }
+
+  // ── Templates sub-tab ──────────────────────────────────────────────
+
+  function fetchTemplates(container) {
+    fetch(apiPathWithToken("/api/templates"), { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("templates fetch failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        buildTemplatesContent(container, data.templates || [])
+      })
+      .catch(function () {
+        buildTemplatesContent(container, [])
+      })
+  }
+
+  function buildTemplatesContent(container, templates) {
+    clearChildren(container)
+
+    if (!templates || !templates.length) {
+      var emptyCard = el("div", "template-card")
+      emptyCard.appendChild(el("div", "template-card-name", "No templates available"))
+      container.appendChild(emptyCard)
+      return
+    }
+
+    // Fetch workspace counts per template
+    fetch(apiPathWithToken("/api/workspaces"), { headers: authHeaders() })
+      .then(function (r) { return r.ok ? r.json() : { workspaces: [] } })
+      .then(function (data) {
+        var counts = {}
+        var ws = data.workspaces || []
+        for (var i = 0; i < ws.length; i++) {
+          if (ws[i].template) {
+            counts[ws[i].template] = (counts[ws[i].template] || 0) + 1
+          }
+        }
+        renderTemplateCards(container, templates, counts)
+      })
+      .catch(function () {
+        renderTemplateCards(container, templates, {})
+      })
+  }
+
+  function renderTemplateCards(container, templates, usedByCounts) {
+    clearChildren(container)
+    var grid = el("div", "template-grid")
+    for (var i = 0; i < templates.length; i++) {
+      grid.appendChild(createTemplateCard(templates[i], usedByCounts[templates[i].name] || 0))
+    }
+    container.appendChild(grid)
+  }
+
+  function createTemplateCard(tmpl, usedByCount) {
+    var card = el("div", "template-card")
+
+    // Top row: name + built-in badge
+    var top = el("div", "template-card-top")
+    top.appendChild(el("span", "template-card-name", tmpl.name))
+    if (tmpl.builtIn) {
+      top.appendChild(el("span", "template-badge-builtin", "built-in"))
+    }
+    card.appendChild(top)
+
+    // Description
+    if (tmpl.description) {
+      card.appendChild(el("div", "template-card-desc", tmpl.description))
+    }
+
+    // Image
+    card.appendChild(el("div", "template-card-image", "\u25A3 " + tmpl.image))
+
+    // Resources
+    var resources = []
+    if (tmpl.cpuDefault) resources.push(tmpl.cpuDefault + " CPU")
+    if (tmpl.memoryDefault) resources.push(formatBytes(tmpl.memoryDefault) + " RAM")
+    if (resources.length) {
+      card.appendChild(el("div", "template-card-resources", resources.join(" \u00B7 ")))
+    }
+
+    // Tags
+    if (tmpl.tags && tmpl.tags.length) {
+      var tagsRow = el("div", "template-card-tags")
+      for (var i = 0; i < tmpl.tags.length; i++) {
+        tagsRow.appendChild(el("span", "template-tag", tmpl.tags[i]))
+      }
+      card.appendChild(tagsRow)
+    }
+
+    // Used by count
+    if (usedByCount > 0) {
+      card.appendChild(el("div", "template-card-usage", "Used by " + usedByCount + " workspace" + (usedByCount !== 1 ? "s" : "")))
+    }
+
+    // Create workspace button
+    var createBtn = el("button", "template-create-btn", "Create Workspace")
+    createBtn.addEventListener("click", function () {
+      openAddProjectModalWithTemplate(tmpl)
+    })
+    card.appendChild(createBtn)
+
+    return card
+  }
+
+  function openAddProjectModalWithTemplate(tmpl) {
+    openAddProjectModal()
+    applyTemplateToModal(tmpl)
+  }
+
+  function applyTemplateToModal(tmpl) {
+    // Set container mode to "provision"
+    var radios = document.querySelectorAll('input[name="container-mode"]')
+    for (var i = 0; i < radios.length; i++) {
+      radios[i].checked = radios[i].value === "provision"
+    }
+    updateContainerFields()
+
+    // Fill fields from template
+    if (addProjectImage) addProjectImage.value = tmpl.image || ""
+    if (addProjectCpu) addProjectCpu.value = tmpl.cpuDefault || 2
+    if (addProjectMem) addProjectMem.value = tmpl.memoryDefault ? (tmpl.memoryDefault / (1024 * 1024 * 1024)).toFixed(1) : "2"
+
+    // Highlight template in picker
+    highlightTemplatePicker(tmpl.name)
+
+    // Store template name for submission
+    if (addProjectModal) addProjectModal.dataset.template = tmpl.name
+  }
+
+  function highlightTemplatePicker(name) {
+    var btns = document.querySelectorAll(".template-pick-btn")
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].dataset.template === name) {
+        btns[i].classList.add("template-pick-btn--active")
+      } else {
+        btns[i].classList.remove("template-pick-btn--active")
+      }
+    }
+  }
+
+  function populateTemplatePicker() {
+    var pickerEl = document.getElementById("template-picker")
+    if (!pickerEl) return
+
+    clearChildren(pickerEl)
+
+    // "Custom" option
+    var customBtn = el("button", "template-pick-btn template-pick-btn--active", "Custom")
+    customBtn.type = "button"
+    customBtn.dataset.template = ""
+    customBtn.addEventListener("click", function () {
+      highlightTemplatePicker("")
+      if (addProjectModal) addProjectModal.dataset.template = ""
+    })
+    pickerEl.appendChild(customBtn)
+
+    fetch(apiPathWithToken("/api/templates"), { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("templates fetch failed")
+        return r.json()
+      })
+      .then(function (data) {
+        var templates = data.templates || []
+        for (var i = 0; i < templates.length; i++) {
+          (function (tmpl) {
+            var btn = el("button", "template-pick-btn", tmpl.name)
+            btn.type = "button"
+            btn.dataset.template = tmpl.name
+            btn.addEventListener("click", function () {
+              applyTemplateToModal(tmpl)
+            })
+            pickerEl.appendChild(btn)
+          })(templates[i])
+        }
+      })
+      .catch(function () {
+        // API not available — picker stays with just "Custom"
+      })
   }
 
   // ── Filter bar ────────────────────────────────────────────────────
@@ -890,8 +1134,9 @@
 
     clearChildren(filterBar)
 
-    // "All" pill
-    var allPill = el("button", "filter-pill" + (state.projectFilter === "" ? " filter-pill--active" : ""), "All")
+    // "All" pill with task count
+    var allLabel = "All (" + state.tasks.length + ")"
+    var allPill = el("button", "filter-pill" + (state.projectFilter === "" ? " filter-pill--active" : ""), allLabel)
     allPill.dataset.project = ""
     allPill.addEventListener("click", handleFilterClick)
     filterBar.appendChild(allPill)
@@ -905,6 +1150,13 @@
       pill.addEventListener("click", handleFilterClick)
       filterBar.appendChild(pill)
     }
+
+    // Re-add the "+ Project" button (cleared by clearChildren above)
+    var addBtn = el("button", "filter-btn", "+ Project")
+    addBtn.id = "add-project-btn"
+    addBtn.title = "Add Project"
+    addBtn.addEventListener("click", openAddProjectModal)
+    filterBar.appendChild(addBtn)
   }
 
   function handleFilterClick(e) {
@@ -959,8 +1211,7 @@
     // Active section
     if (active.length > 0) {
       var activeHeader = el("div", "task-section-header")
-      activeHeader.appendChild(el("span", null, "Active"))
-      activeHeader.appendChild(el("span", "task-section-count", active.length.toString()))
+      activeHeader.appendChild(el("span", null, "Active \u00B7 " + active.length))
       taskList.appendChild(activeHeader)
 
       for (var a = 0; a < active.length; a++) {
@@ -971,8 +1222,7 @@
     // Completed section
     if (completed.length > 0) {
       var completedHeader = el("div", "task-section-header")
-      completedHeader.appendChild(el("span", null, "Completed"))
-      completedHeader.appendChild(el("span", "task-section-count", completed.length.toString()))
+      completedHeader.appendChild(el("span", null, "Completed \u00B7 " + completed.length))
       taskList.appendChild(completedHeader)
 
       for (var c = 0; c < completed.length; c++) {
@@ -993,10 +1243,21 @@
     var borderColor = getCardBorderColor(task)
     card.style.borderLeftColor = borderColor
 
-    // Top row: project name + task id
+    // Top row: project name (left) + INPUT badge + agent status (right)
     var top = el("div", "agent-card-top")
     top.appendChild(el("span", "agent-card-project", task.project || "\u2014"))
-    top.appendChild(el("span", "agent-card-id", task.id))
+    var topRight = el("div", "agent-card-footer")
+    topRight.style.gap = "6px"
+    if (task.agentStatus === "waiting" && task.askQuestion) {
+      topRight.appendChild(el("span", "ask-badge", "\u25D0 INPUT"))
+    }
+    var liveSession = getActiveSessionForTask(task)
+    if (liveSession) {
+      topRight.appendChild(createAgentStatusBadge(mapSessionStatus(liveSession.status)))
+    } else {
+      topRight.appendChild(createAgentStatusBadge(task.agentStatus))
+    }
+    top.appendChild(topRight)
     card.appendChild(top)
 
     // Description
@@ -1004,32 +1265,13 @@
       card.appendChild(el("div", "agent-card-desc", task.description))
     }
 
-    // Footer row 1: status badge + INPUT badge
+    // Footer: task ID + time (left) | mini session chain bars (right)
     var footer = el("div", "agent-card-footer")
-    var liveSession = getActiveSessionForTask(task)
-    if (liveSession) {
-      footer.appendChild(createAgentStatusBadge(mapSessionStatus(liveSession.status)))
-    } else {
-      footer.appendChild(createAgentStatusBadge(task.agentStatus))
-    }
-
-    // Ask badge if waiting with question
-    if (task.agentStatus === "waiting" && task.askQuestion) {
-      var askBadge = el("span", "ask-badge", "\u25D0 INPUT")
-      leftBadges.appendChild(askBadge)
-    }
-
-    leftBadges.appendChild(createAgentStatusBadge(task.agentStatus))
-    footer.appendChild(leftBadges)
-    card.appendChild(footer)
-
-    // Footer row 2: task ID + time | mini session chain bars
-    var footer2 = el("div", "agent-card-footer")
-    footer2.style.justifyContent = "space-between"
+    footer.style.justifyContent = "space-between"
     var idTime = el("span", "agent-card-time", task.id + " \u00B7 " + (task.time || formatDuration(task.createdAt)))
-    footer2.appendChild(idTime)
-    footer2.appendChild(createMiniSessionChain(task))
-    card.appendChild(footer2)
+    footer.appendChild(idTime)
+    footer.appendChild(createMiniSessionChain(task))
+    card.appendChild(footer)
 
     // Click handler
     card.addEventListener("click", function () {
@@ -1060,21 +1302,13 @@
   function createMiniSessionChain(task) {
     var chain = el("div", "mini-session-chain")
 
-    // Use sessions array if available, otherwise fall back to phase
+    // Only show mini bars when task has actual sessions
     var segments = []
     if (task.sessions && task.sessions.length > 0) {
       for (var i = 0; i < task.sessions.length; i++) {
         segments.push({
           phase: task.sessions[i].phase,
           status: task.sessions[i].status,
-        })
-      }
-    } else if (task.phase) {
-      var currentIdx = PHASES.indexOf(task.phase)
-      for (var j = 0; j < PHASES.length; j++) {
-        segments.push({
-          phase: PHASES[j],
-          status: j < currentIdx ? "complete" : (j === currentIdx ? "active" : "pending"),
         })
       }
     }
@@ -1165,7 +1399,7 @@
     backBtn.addEventListener("click", handleMobileBack)
     top.appendChild(backBtn)
 
-    top.appendChild(el("span", "detail-title", (task.project || "\u2014") + " \u00B7 " + task.id))
+    top.appendChild(el("span", "detail-title", task.description || "\u2014"))
 
     var actions = el("div", "detail-actions")
     var detailLive = getActiveSessionForTask(task)
@@ -1178,16 +1412,22 @@
 
     header.appendChild(top)
 
-    // Meta row: description + branch
+    // Meta row: project / id + branch + tmux session + skills
     var meta = el("div", "detail-meta")
-    if (task.description) {
-      meta.appendChild(document.createTextNode(task.description))
-    }
+    meta.appendChild(el("span", null, (task.project || "\u2014") + " / " + task.id))
     if (task.branch) {
-      var sep = el("span", null, "\u00B7")
-      sep.style.color = "var(--text-dim)"
-      meta.appendChild(sep)
-      meta.appendChild(el("span", null, task.branch))
+      meta.appendChild(el("span", null, "\u2192 " + task.branch))
+    }
+    if (task.tmuxSession) {
+      var tmuxTag = el("span", null, "tmux: " + task.tmuxSession)
+      tmuxTag.style.cssText = "color: var(--text-dim); background: var(--bg-panel); padding: 1px 6px; border-radius: 2px; font-size: 0.5rem;"
+      meta.appendChild(tmuxTag)
+    }
+    var skills = task.skills || []
+    for (var sk = 0; sk < skills.length; sk++) {
+      var skillTag = el("span", null, skills[sk])
+      skillTag.style.cssText = "color: var(--purple); background: rgba(139,140,248,0.08); padding: 1px 6px; border-radius: 2px; font-size: 0.56rem;"
+      meta.appendChild(skillTag)
     }
     header.appendChild(meta)
   }
@@ -1229,26 +1469,47 @@
     }
 
     for (var k = 0; k < phases.length; k++) {
+      var phaseColor = PHASE_COLORS_HEX[phases[k].label] || "#4a5368"
+
       // Connector
       if (k > 0) {
-        var connClass = "session-chain-connector"
-        if (phases[k - 1].status === "done") connClass += " done"
-        container.appendChild(el("div", connClass))
+        var conn = el("div", "session-chain-connector")
+        if (phases[k - 1].status === "done") {
+          conn.style.background = "rgba(45, 212, 160, 0.38)"
+        }
+        container.appendChild(conn)
       }
 
       // Pip
       var pip = el("div", "session-chain-pip")
 
-      var dotClass = "session-chain-dot"
-      if (phases[k].status === "done") dotClass += " done"
-      else if (phases[k].status === "active") dotClass += " active"
-      pip.appendChild(el("div", dotClass, phases[k].dotLabel))
+      var dot = el("div", "session-chain-dot")
+      dot.style.borderColor = phaseColor
+      if (phases[k].status === "done") {
+        dot.style.background = phaseColor
+        dot.style.color = "var(--bg)"
+      } else if (phases[k].status === "active") {
+        dot.style.background = "transparent"
+        dot.style.color = phaseColor
+        dot.style.boxShadow = "0 0 6px " + phaseColor + "60"
+      } else {
+        dot.style.background = "transparent"
+        dot.style.color = "var(--text-dim)"
+      }
+      pip.appendChild(dot)
 
-      var lblClass = "session-chain-label"
-      if (phases[k].status === "active") lblClass += " active"
-      var lblText = phases[k].label
-      if (phases[k].duration) lblText += " " + phases[k].duration
-      pip.appendChild(el("div", lblClass, lblText))
+      var lbl = el("div", "session-chain-label")
+      lbl.style.color = phases[k].status === "active" ? phaseColor : "var(--text-dim)"
+      if (phases[k].status === "active") lbl.style.fontWeight = "600"
+      lbl.textContent = phases[k].label
+      pip.appendChild(lbl)
+
+      if (phases[k].duration) {
+        var dur = el("div", "session-chain-label")
+        dur.style.fontSize = "0.5rem"
+        dur.textContent = phases[k].duration
+        pip.appendChild(dur)
+      }
 
       container.appendChild(pip)
     }
@@ -1283,12 +1544,14 @@
     var row = el("div", "preview-header-row")
 
     var leftGroup = el("div", null)
+    leftGroup.style.display = "flex"
+    leftGroup.style.alignItems = "center"
     leftGroup.appendChild(el("span", "preview-header-project", task.project || "\u2014"))
 
     var previewLive = getActiveSessionForTask(task)
     var effectiveStatus = previewLive ? mapSessionStatus(previewLive.status) : task.agentStatus
     var agentMeta = AGENT_STATUS_META[effectiveStatus] || AGENT_STATUS_META.idle
-    var statusSpan = el("span", "preview-header-status")
+    var statusSpan = el("span", "preview-header-agent-status")
     statusSpan.textContent = agentMeta.icon + " " + agentMeta.label
     statusSpan.style.color = agentMeta.color
     if (agentMeta === AGENT_STATUS_META.waiting || agentMeta === AGENT_STATUS_META.thinking) {
@@ -1341,11 +1604,18 @@
 
     var statusLabel = el("span", null)
     statusLabel.appendChild(document.createTextNode("Status: "))
-    if (task.tmuxSession) {
+    var liveSession = getActiveSessionForTask(task)
+    if (liveSession && liveSession.status !== "error") {
       var connSpan = el("span", "claude-meta-connected", "\u25CF Connected")
       statusLabel.appendChild(connSpan)
+    } else if (liveSession && liveSession.status === "error") {
+      var errSpan = el("span", "claude-meta-disconnected", "\u25CB Session exited")
+      statusLabel.appendChild(errSpan)
+    } else if (task.tmuxSession) {
+      var connSpan2 = el("span", "claude-meta-connected", "\u25CF Connected")
+      statusLabel.appendChild(connSpan2)
     } else {
-      var discSpan = el("span", "claude-meta-disconnected", "\u25CB Disconnected")
+      var discSpan = el("span", "claude-meta-disconnected", "\u25CB No session")
       statusLabel.appendChild(discSpan)
     }
     row1.appendChild(statusLabel)
@@ -1394,27 +1664,23 @@
     if (!container) return
     clearChildren(container)
 
-    // Resolve the tmux session name:
-    // 1. Try live session from session map (real session.Instance)
-    // 2. Fall back to task.tmuxSession (container-based legacy)
-    var tmuxName = null
-    var liveSession = getActiveSessionForTask(task)
-    if (liveSession && liveSession.tmuxSession) {
-      tmuxName = liveSession.tmuxSession
-    } else if (task.tmuxSession) {
-      tmuxName = task.tmuxSession
-    }
-
-    if (!tmuxName) {
-      var placeholder = el("div", "terminal-placeholder", "No session attached.")
-      container.appendChild(placeholder)
-      return
-    }
-
     // Check if Terminal (xterm.js) is available
     if (typeof Terminal === "undefined") {
       var fallback = el("div", "terminal-placeholder", "Terminal emulator not available. Check xterm.js assets.")
       container.appendChild(fallback)
+      return
+    }
+
+    // Resolve session identity for the WebSocket connection:
+    // The WS handler matches by session.Instance ID, not tmux session name.
+    // 1. Try live session from session map (real session.Instance)
+    // 2. Container sessions use SSE preview (no local session.Instance)
+    var liveSession = getActiveSessionForTask(task)
+    var isContainerTask = !liveSession && task.tmuxSession
+
+    if (!liveSession && !isContainerTask) {
+      var placeholder = el("div", "terminal-placeholder", "No session attached.")
+      container.appendChild(placeholder)
       return
     }
 
@@ -1436,8 +1702,19 @@
     state.terminal = term
     state.fitAddon = fitAddon
 
+    if (isContainerTask) {
+      // Container sessions: stream output via SSE preview endpoint
+      connectPreviewStream(task, term)
+    } else {
+      // Local sessions: connect via WebSocket for live PTY
+      connectWebSocket(liveSession.id, term)
+    }
+  }
+
+  // Connect terminal to WebSocket for local sessions with live PTY streaming.
+  function connectWebSocket(sessionId, term) {
     var protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(tmuxName)
+    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(sessionId)
     if (state.authToken) wsUrl += "?token=" + encodeURIComponent(state.authToken)
     var ws = new WebSocket(wsUrl)
     state.terminalWs = ws
@@ -1445,21 +1722,45 @@
     ws.binaryType = "arraybuffer"
     ws.onmessage = function (e) {
       if (e.data instanceof ArrayBuffer) {
+        // Binary frames are PTY output — write to terminal
         term.write(new Uint8Array(e.data))
-      } else {
-        term.write(e.data)
       }
+      // String frames are JSON control messages (status, error, etc.) — ignore for terminal
     }
     ws.onclose = function () { state.terminalWs = null }
     term.onData(function (data) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(data)
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data: data }))
     })
+  }
+
+  // Connect terminal to SSE preview stream for container-based sessions.
+  function connectPreviewStream(task, term) {
+    var previewUrl = apiPathWithToken("/api/tasks/" + encodeURIComponent(task.id) + "/preview")
+    var es = new EventSource(previewUrl)
+    state.previewStream = es
+
+    es.addEventListener("preview", function (e) {
+      try {
+        var data = JSON.parse(e.data)
+        if (data.output) {
+          term.reset()
+          term.write(data.output)
+        }
+      } catch (err) { /* ignore parse errors */ }
+    })
+    es.onerror = function () {
+      // SSE auto-reconnects; nothing to do here
+    }
   }
 
   function disconnectTerminal() {
     if (state.terminalWs) {
       state.terminalWs.close()
       state.terminalWs = null
+    }
+    if (state.previewStream) {
+      state.previewStream.close()
+      state.previewStream = null
     }
     if (state.terminal) {
       state.terminal.dispose()
@@ -1564,11 +1865,12 @@
     if (state.activeView === "agents" && task && task.agentStatus !== "complete" && task.agentStatus !== "idle") {
       return {
         mode: "reply",
-        label: "\u21A9 " + task.id + "/" + task.phase,
+        label: task.id + "/" + task.phase,
         icon: "\u21A9",
         color: CHAT_MODES.reply.color,
         tmuxSession: task.tmuxSession,
         taskId: task.id,
+        sessionPhase: task.phase,
         askQuestion: task.askQuestion,
       }
     }
@@ -1576,7 +1878,7 @@
     if (state.activeView === "conductor") {
       return {
         mode: "conductor",
-        label: "\u25CE Conductor",
+        label: "Conductor",
         icon: "\u25CE",
         color: CHAT_MODES.conductor.color,
       }
@@ -1588,7 +1890,7 @@
 
     return {
       mode: "new",
-      label: project ? "+ " + project : "+ auto-route",
+      label: project || "auto-route",
       icon: "+",
       color: CHAT_MODES.new.color,
       target: project,
@@ -1945,6 +2247,12 @@
       placeholder.selected = true
       newTaskProject.appendChild(placeholder)
     }
+    // Add "+ Add Project..." option
+    var addOpt = document.createElement("option")
+    addOpt.value = "__add_project__"
+    addOpt.textContent = "+ Add Project..."
+    newTaskProject.appendChild(addOpt)
+
     if (newTaskDesc) newTaskDesc.value = ""
     if (newTaskPhase) newTaskPhase.value = "execute"
     if (newTaskSubmit) newTaskSubmit.disabled = !hasProjects
@@ -2052,6 +2360,196 @@
     }, 300)
   }
 
+  // ── Add Project modal ────────────────────────────────────────────
+  var addProjectModal = document.getElementById("add-project-modal")
+  var addProjectBackdrop = document.getElementById("add-project-backdrop")
+  var addProjectRepo = document.getElementById("add-project-repo")
+  var addProjectName = document.getElementById("add-project-name")
+  var addProjectPath = document.getElementById("add-project-path")
+  var addProjectKeywords = document.getElementById("add-project-keywords")
+  var addProjectContainer = document.getElementById("add-project-container")        // <select>
+  var addProjectContainerCustom = document.getElementById("add-project-container-custom")  // fallback text input
+  var addProjectStatus = document.getElementById("add-project-status")
+  var addProjectImage = document.getElementById("add-project-image")
+  var addProjectCpu = document.getElementById("add-project-cpu")
+  var addProjectMem = document.getElementById("add-project-mem")
+
+  function setProjectStatus(msg, isError) {
+    if (!addProjectStatus) return
+    addProjectStatus.textContent = msg
+    addProjectStatus.className = "modal-status" + (msg ? (isError ? " modal-status--error" : " modal-status--ok") : "")
+  }
+
+  function populateContainerDropdown() {
+    if (!addProjectContainer) return
+    // Keep first "Select..." option, clear rest
+    while (addProjectContainer.options.length > 1) addProjectContainer.remove(1)
+
+    fetch(apiPathWithToken("/api/workspaces"), { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("fetch failed")
+        return r.json()
+      })
+      .then(function (data) {
+        var ws = data.workspaces || []
+        var hasContainers = false
+        for (var i = 0; i < ws.length; i++) {
+          if (ws[i].container) {
+            var opt = document.createElement("option")
+            opt.value = ws[i].container
+            opt.textContent = ws[i].name + " (" + ws[i].container + ")"
+            addProjectContainer.appendChild(opt)
+            hasContainers = true
+          }
+        }
+        // Add "Custom..." option to allow manual entry
+        var customOpt = document.createElement("option")
+        customOpt.value = "__custom__"
+        customOpt.textContent = hasContainers ? "Other (enter manually)..." : "No containers found — enter manually..."
+        addProjectContainer.appendChild(customOpt)
+      })
+      .catch(function () {
+        // API unavailable — show fallback text input instead
+        if (addProjectContainer) addProjectContainer.style.display = "none"
+        if (addProjectContainerCustom) addProjectContainerCustom.style.display = ""
+      })
+  }
+
+  function openAddProjectModal() {
+    if (addProjectRepo) addProjectRepo.value = ""
+    if (addProjectName) addProjectName.value = ""
+    if (addProjectPath) addProjectPath.value = ""
+    if (addProjectKeywords) addProjectKeywords.value = ""
+    if (addProjectContainer) addProjectContainer.value = ""
+    if (addProjectContainerCustom) addProjectContainerCustom.value = ""
+    if (addProjectImage) addProjectImage.value = ""
+    if (addProjectCpu) addProjectCpu.value = "2"
+    if (addProjectMem) addProjectMem.value = "2"
+    if (addProjectModal) addProjectModal.dataset.template = ""
+    setProjectStatus("")
+    // Reset radio to "none"
+    var radios = document.querySelectorAll('input[name="container-mode"]')
+    for (var i = 0; i < radios.length; i++) {
+      radios[i].checked = radios[i].value === "none"
+    }
+    updateContainerFields()
+    populateTemplatePicker()
+    if (addProjectModal) addProjectModal.classList.add("open")
+    if (addProjectBackdrop) addProjectBackdrop.classList.add("open")
+    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "false")
+    if (addProjectRepo) addProjectRepo.focus()
+  }
+
+  function closeAddProjectModal() {
+    if (addProjectModal) addProjectModal.classList.remove("open")
+    if (addProjectBackdrop) addProjectBackdrop.classList.remove("open")
+    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "true")
+    setProjectStatus("")
+  }
+
+  function getContainerMode() {
+    var radios = document.querySelectorAll('input[name="container-mode"]')
+    for (var i = 0; i < radios.length; i++) {
+      if (radios[i].checked) return radios[i].value
+    }
+    return "none"
+  }
+
+  function updateContainerFields() {
+    var mode = getContainerMode()
+    var existingEl = document.getElementById("container-fields-existing")
+    var provisionEl = document.getElementById("container-fields-provision")
+    if (existingEl) existingEl.style.display = mode === "existing" ? "" : "none"
+    if (provisionEl) provisionEl.style.display = mode === "provision" ? "" : "none"
+
+    // Populate container dropdown when "existing" is selected
+    if (mode === "existing") {
+      // Reset: show dropdown, hide custom input
+      if (addProjectContainer) addProjectContainer.style.display = ""
+      if (addProjectContainerCustom) addProjectContainerCustom.style.display = "none"
+      populateContainerDropdown()
+    }
+  }
+
+  function submitAddProject() {
+    var repo = addProjectRepo ? addProjectRepo.value.trim() : ""
+    var name = addProjectName ? addProjectName.value.trim() : ""
+    var path = addProjectPath ? addProjectPath.value.trim() : ""
+    var keywords = addProjectKeywords ? addProjectKeywords.value.trim() : ""
+    var mode = getContainerMode()
+
+    if (!repo && !name) {
+      setProjectStatus("Repo or name is required", true)
+      return
+    }
+
+    var body = { repo: repo, name: name, path: path }
+    if (keywords) body.keywords = keywords.split(",").map(function (k) { return k.trim() }).filter(Boolean)
+
+    // Include template if one was selected.
+    var selectedTemplate = addProjectModal ? (addProjectModal.dataset.template || "") : ""
+    if (selectedTemplate) body.template = selectedTemplate
+
+    if (mode === "existing") {
+      // Read from dropdown or fallback custom input
+      var dropVal = addProjectContainer ? addProjectContainer.value : ""
+      if (dropVal === "__custom__" || addProjectContainer.style.display === "none") {
+        body.container = addProjectContainerCustom ? addProjectContainerCustom.value.trim() : ""
+      } else {
+        body.container = dropVal
+      }
+    } else if (mode === "provision") {
+      body.image = addProjectImage ? addProjectImage.value.trim() : ""
+      if (!body.image) {
+        setProjectStatus("Docker image is required for auto-provision", true)
+        return
+      }
+      body.cpuLimit = parseFloat(addProjectCpu ? addProjectCpu.value : "2") || 2
+      body.memoryLimit = Math.round((parseFloat(addProjectMem ? addProjectMem.value : "2") || 2) * 1024 * 1024 * 1024)
+    }
+
+    // Disable button while submitting
+    var submitBtn = document.getElementById("add-project-submit")
+    if (submitBtn) submitBtn.disabled = true
+    setProjectStatus("Creating project...", false)
+
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/projects"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(body),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("create project failed: " + r.status)
+        return r.json()
+      })
+      .then(function () {
+        closeAddProjectModal()
+        fetchProjects()
+        fetchTasks()
+      })
+      .catch(function (err) {
+        console.error("submitAddProject:", err)
+        setProjectStatus("Failed to create project — is the backend running?", true)
+      })
+      .finally(function () {
+        if (submitBtn) submitBtn.disabled = false
+      })
+  }
+
+  // Auto-derive name from repo
+  if (addProjectRepo) {
+    addProjectRepo.addEventListener("input", function () {
+      var val = addProjectRepo.value.trim()
+      var parts = val.split("/")
+      var derived = parts[parts.length - 1] || ""
+      if (addProjectName) addProjectName.value = derived
+      if (addProjectPath && derived) addProjectPath.value = "~/projects/" + derived
+    })
+  }
+
   // ── Event listeners ───────────────────────────────────────────────
 
   // Sidebar view icons
@@ -2074,6 +2572,47 @@
   if (newTaskDesc) {
     newTaskDesc.addEventListener("input", function () {
       suggestProject(newTaskDesc.value.trim())
+    })
+  }
+
+  // Add project modal controls
+  var addProjectBtn = document.getElementById("add-project-btn")
+  if (addProjectBtn) addProjectBtn.addEventListener("click", openAddProjectModal)
+  var addProjectClose = document.getElementById("add-project-close")
+  var addProjectCancel = document.getElementById("add-project-cancel")
+  var addProjectSubmitBtn = document.getElementById("add-project-submit")
+  if (addProjectClose) addProjectClose.addEventListener("click", closeAddProjectModal)
+  if (addProjectCancel) addProjectCancel.addEventListener("click", closeAddProjectModal)
+  if (addProjectBackdrop) addProjectBackdrop.addEventListener("click", closeAddProjectModal)
+  if (addProjectSubmitBtn) addProjectSubmitBtn.addEventListener("click", submitAddProject)
+
+  // Container mode radio changes
+  var containerModeRadios = document.querySelectorAll('input[name="container-mode"]')
+  for (var cmi = 0; cmi < containerModeRadios.length; cmi++) {
+    containerModeRadios[cmi].addEventListener("change", updateContainerFields)
+  }
+
+  // Container dropdown: show custom text input when "Other" is selected
+  if (addProjectContainer) {
+    addProjectContainer.addEventListener("change", function () {
+      if (addProjectContainer.value === "__custom__") {
+        if (addProjectContainerCustom) {
+          addProjectContainerCustom.style.display = ""
+          addProjectContainerCustom.focus()
+        }
+      } else {
+        if (addProjectContainerCustom) addProjectContainerCustom.style.display = "none"
+      }
+    })
+  }
+
+  // New task project dropdown: intercept "+ Add Project..." selection
+  if (newTaskProject) {
+    newTaskProject.addEventListener("change", function () {
+      if (newTaskProject.value === "__add_project__") {
+        closeNewTaskModal()
+        openAddProjectModal()
+      }
     })
   }
 
@@ -2138,7 +2677,9 @@
   // Escape key
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") {
-      if (newTaskModal && newTaskModal.classList.contains("open")) {
+      if (addProjectModal && addProjectModal.classList.contains("open")) {
+        closeAddProjectModal()
+      } else if (newTaskModal && newTaskModal.classList.contains("open")) {
         closeNewTaskModal()
       } else if (state.selectedTaskId) {
         handleMobileBack()
