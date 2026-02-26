@@ -67,11 +67,16 @@ func (s *TemplateStore) List() ([]*Template, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
+		// Skip files whose filename matches a built-in name.
+		nameFromFile := strings.TrimSuffix(entry.Name(), ".json")
+		if builtInNames[nameFromFile] {
+			continue
+		}
 		tmpl, err := s.readTemplateFile(entry.Name())
 		if err != nil {
 			continue // skip corrupt files
 		}
-		// Skip user files that shadow built-in names.
+		// Also skip if the JSON content's name matches a built-in.
 		if builtInNames[tmpl.Name] {
 			continue
 		}

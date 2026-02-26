@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 
@@ -136,7 +137,7 @@ func TestTemplateStore_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			name := "concurrent-" + string(rune('a'+idx))
+			name := fmt.Sprintf("concurrent-%d", idx)
 			_ = store.Save(&Template{Name: name, Image: "img:" + name})
 			_, _ = store.Get(name)
 			_, _ = store.List()
