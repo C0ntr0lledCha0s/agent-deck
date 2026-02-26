@@ -42,7 +42,8 @@ type StartPhaseResult struct {
 
 // StartPhase creates a new session.Instance for the given task phase.
 // It links the session to the task's Sessions slice and updates task status.
-// The session is created but NOT started (no tmux) — the caller decides when to start.
+// For local (non-container) projects, the tmux session is started asynchronously
+// via StartWithMessage. For container projects, the phase prompt is sent via the launcher.
 func (b *HubSessionBridge) StartPhase(taskID string, phase hub.Phase) (*StartPhaseResult, error) {
 	if b.tasks == nil {
 		return nil, fmt.Errorf("task store not initialized")
@@ -103,7 +104,22 @@ func (b *HubSessionBridge) StartPhase(taskID string, phase hub.Phase) (*StartPha
 				// Non-fatal: the session is created, just the prompt wasn't sent.
 			}
 		}
-		// TODO: For local (non-container) sessions, wire to tmux SendKeys directly.
+	}
+
+	// Start tmux session for local (non-container) projects.
+	if b.projects != nil {
+		if proj, projErr := b.projects.Get(task.Project); projErr == nil && proj.Container == "" {
+			prompt := phasePrompt(phase, task.Description)
+			go func() {
+				if startErr := inst.StartWithMessage(prompt); startErr != nil {
+					logging.ForComponent(logging.CompWeb).Warn("local_session_start_failed",
+						slog.String("task", task.ID),
+						slog.String("phase", string(phase)),
+						slog.String("error", startErr.Error()),
+					)
+				}
+			}()
+		}
 	}
 
 	return &StartPhaseResult{
