@@ -255,6 +255,10 @@ func main() {
 			handleWorktree(profile, args[1:])
 			return
 		case "web":
+			if hasHeadlessFlag(args[1:]) {
+				handleWebHeadless(profile, args[1:])
+				return
+			}
 			webEnabled = true
 			webArgs = append(webArgs, args[1:]...)
 			// fall through to TUI launch below
@@ -1997,7 +2001,7 @@ func printHelp() {
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
-	fmt.Println("  web              Start TUI with web UI server running alongside")
+	fmt.Println("  web              Start TUI with web UI server (--headless for server-only)")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
