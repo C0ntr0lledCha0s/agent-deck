@@ -159,7 +159,10 @@ func TestContainerNameForProject(t *testing.T) {
 		{"myapp", "agentdeck-myapp"},
 		{"web-frontend", "agentdeck-web-frontend"},
 		{"api", "agentdeck-api"},
-		{"", "agentdeck-"},
+		{"", "agentdeck-unnamed"},
+		{"my app", "agentdeck-my-app"},
+		{"foo:bar", "agentdeck-foo-bar"},
+		{"a/b\\c", "agentdeck-a-b-c"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.project, func(t *testing.T) {

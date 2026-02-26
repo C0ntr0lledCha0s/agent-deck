@@ -1222,7 +1222,8 @@ func (s *Server) handleWorkspaceStart(w http.ResponseWriter, r *http.Request, na
 		}
 
 		if _, createErr := s.containerRuntime.Create(ctx, opts); createErr != nil {
-			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create container: "+createErr.Error())
+			slog.Error("workspace_create_failed", slog.String("container", containerName), slog.String("error", createErr.Error()))
+			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create container")
 			return
 		}
 		project.Container = containerName
@@ -1230,7 +1231,8 @@ func (s *Server) handleWorkspaceStart(w http.ResponseWriter, r *http.Request, na
 	}
 
 	if startErr := s.containerRuntime.Start(ctx, containerName); startErr != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to start container: "+startErr.Error())
+		slog.Error("workspace_start_failed", slog.String("container", containerName), slog.String("error", startErr.Error()))
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to start container")
 		return
 	}
 
@@ -1260,7 +1262,8 @@ func (s *Server) handleWorkspaceStop(w http.ResponseWriter, r *http.Request, nam
 	}
 
 	if stopErr := s.containerRuntime.Stop(r.Context(), project.Container, 30); stopErr != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to stop container: "+stopErr.Error())
+		slog.Error("workspace_stop_failed", slog.String("container", project.Container), slog.String("error", stopErr.Error()))
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to stop container")
 		return
 	}
 
@@ -1290,7 +1293,8 @@ func (s *Server) handleWorkspaceRemove(w http.ResponseWriter, r *http.Request, n
 	}
 
 	if rmErr := s.containerRuntime.Remove(r.Context(), project.Container, true); rmErr != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove container: "+rmErr.Error())
+		slog.Error("workspace_remove_failed", slog.String("container", project.Container), slog.String("error", rmErr.Error()))
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove container")
 		return
 	}
 

@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"io"
+	"regexp"
 )
 
 // Container status constants.
@@ -70,7 +71,14 @@ type ContainerStats struct {
 	MemLimit   uint64  // Memory limit in bytes.
 }
 
+var invalidContainerNameChars = regexp.MustCompile(`[^a-zA-Z0-9_.-]`)
+
 // ContainerNameForProject returns the canonical container name for a given project.
+// The name is sanitized to satisfy Docker's container naming rules.
 func ContainerNameForProject(projectName string) string {
-	return "agentdeck-" + projectName
+	sanitized := invalidContainerNameChars.ReplaceAllString(projectName, "-")
+	if sanitized == "" {
+		sanitized = "unnamed"
+	}
+	return "agentdeck-" + sanitized
 }
