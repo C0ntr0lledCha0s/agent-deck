@@ -1603,11 +1603,18 @@
 
     var statusLabel = el("span", null)
     statusLabel.appendChild(document.createTextNode("Status: "))
-    if (task.tmuxSession) {
+    var liveSession = getActiveSessionForTask(task)
+    if (liveSession && liveSession.status !== "error") {
       var connSpan = el("span", "claude-meta-connected", "\u25CF Connected")
       statusLabel.appendChild(connSpan)
+    } else if (liveSession && liveSession.status === "error") {
+      var errSpan = el("span", "claude-meta-disconnected", "\u25CB Session exited")
+      statusLabel.appendChild(errSpan)
+    } else if (task.tmuxSession) {
+      var connSpan2 = el("span", "claude-meta-connected", "\u25CF Connected")
+      statusLabel.appendChild(connSpan2)
     } else {
-      var discSpan = el("span", "claude-meta-disconnected", "\u25CB Disconnected")
+      var discSpan = el("span", "claude-meta-disconnected", "\u25CB No session")
       statusLabel.appendChild(discSpan)
     }
     row1.appendChild(statusLabel)
