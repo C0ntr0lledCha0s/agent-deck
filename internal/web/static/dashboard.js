@@ -16,6 +16,7 @@
     chatMode: null,
     chatModeOverride: null,
     sessionMap: {},  // menuSession.id → menuSession (from SSE menu events)
+    workspacesSubTab: "workspaces",  // "workspaces" | "templates"
   }
 
   // ── Status metadata ─────────────────────────────────────────────
@@ -253,6 +254,7 @@
     if (!view) return
     state.activeView = view
     state.chatModeOverride = null
+    if (view !== "workspaces") state.workspacesSubTab = "workspaces"
     renderSidebar()
     renderTopBar()
     renderView()
@@ -269,7 +271,11 @@
     clearChildren(rightEl)
 
     // View label
-    leftEl.appendChild(el("span", "top-bar-view", state.activeView))
+    var viewLabel = state.activeView
+    if (state.activeView === "workspaces" && state.workspacesSubTab === "templates") {
+      viewLabel = "workspaces / templates"
+    }
+    leftEl.appendChild(el("span", "top-bar-view", viewLabel))
 
     // Breadcrumb for selected task
     var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
@@ -764,13 +770,41 @@
     clearChildren(wsEl)
     wsEl.style.display = ""
 
-    // Start polling
-    stopWorkspacePolling()
-    workspacePollInterval = setInterval(function () {
-      if (state.activeView === "workspaces") fetchWorkspaces(wsEl)
-    }, 5000)
+    // Render toggle bar
+    var toggleBar = el("div", "ws-toggle-bar")
+    var wsTab = el("button", "ws-toggle-tab" + (state.workspacesSubTab === "workspaces" ? " ws-toggle-tab--active" : ""), "Workspaces")
+    wsTab.addEventListener("click", function () {
+      state.workspacesSubTab = "workspaces"
+      renderWorkspacesView()
+      renderTopBar()
+    })
+    var tmplTab = el("button", "ws-toggle-tab" + (state.workspacesSubTab === "templates" ? " ws-toggle-tab--active" : ""), "Templates")
+    tmplTab.addEventListener("click", function () {
+      state.workspacesSubTab = "templates"
+      renderWorkspacesView()
+      renderTopBar()
+    })
+    toggleBar.appendChild(wsTab)
+    toggleBar.appendChild(tmplTab)
+    wsEl.appendChild(toggleBar)
 
-    fetchWorkspaces(wsEl)
+    // Content area
+    var contentEl = el("div", "ws-content")
+    wsEl.appendChild(contentEl)
+
+    if (state.workspacesSubTab === "templates") {
+      stopWorkspacePolling()
+      fetchTemplates(contentEl)
+    } else {
+      // Start polling for workspaces
+      stopWorkspacePolling()
+      workspacePollInterval = setInterval(function () {
+        if (state.activeView === "workspaces" && state.workspacesSubTab === "workspaces") {
+          fetchWorkspaces(contentEl)
+        }
+      }, 5000)
+      fetchWorkspaces(contentEl)
+    }
   }
 
   function stopWorkspacePolling() {
@@ -780,14 +814,14 @@
     }
   }
 
-  function fetchWorkspaces(wsEl) {
+  function fetchWorkspaces(contentEl) {
     fetch(apiPathWithToken("/api/workspaces"), { headers: authHeaders() })
       .then(function (r) {
         if (!r.ok) throw new Error("workspaces fetch failed: " + r.status)
         return r.json()
       })
       .then(function (data) {
-        buildWorkspacesContent(wsEl, data.workspaces || [])
+        buildWorkspacesContent(contentEl, data.workspaces || [])
       })
       .catch(function () {
         // Fallback to projects
@@ -802,13 +836,12 @@
             activeTasks: 0,
           }
         })
-        buildWorkspacesContent(wsEl, workspaces)
+        buildWorkspacesContent(contentEl, workspaces)
       })
   }
 
   function buildWorkspacesContent(container, workspaces) {
     clearChildren(container)
-    container.appendChild(el("div", "workspaces-header", "Workspaces"))
 
     if (!workspaces || !workspaces.length) {
       var emptyCard = el("div", "workspace-card")
@@ -853,6 +886,12 @@
     top.appendChild(actions)
     card.appendChild(top)
 
+    // Template badge
+    if (ws.template) {
+      var tmplBadge = el("span", "workspace-card-template", "\u25A3 " + ws.template)
+      card.appendChild(tmplBadge)
+    }
+
     // Info rows
     if (ws.image) card.appendChild(el("div", "workspace-card-desc", "Image: " + ws.image))
 
@@ -889,8 +928,8 @@
       .then(function () {
         // Refresh workspace view
         if (state.activeView === "workspaces") {
-          var wsEl = document.getElementById("workspaces-view")
-          if (wsEl) fetchWorkspaces(wsEl)
+          var contentEl = document.querySelector(".ws-content")
+          if (contentEl) fetchWorkspaces(contentEl)
         }
       })
       .catch(function (err) {
@@ -905,6 +944,186 @@
     var val = bytes
     while (val >= 1024 && i < units.length - 1) { val /= 1024; i++ }
     return val.toFixed(i > 1 ? 1 : 0) + " " + units[i]
+  }
+
+  // ── Templates sub-tab ──────────────────────────────────────────────
+
+  function fetchTemplates(container) {
+    fetch(apiPathWithToken("/api/templates"), { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("templates fetch failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        buildTemplatesContent(container, data.templates || [])
+      })
+      .catch(function () {
+        buildTemplatesContent(container, [])
+      })
+  }
+
+  function buildTemplatesContent(container, templates) {
+    clearChildren(container)
+
+    if (!templates || !templates.length) {
+      var emptyCard = el("div", "template-card")
+      emptyCard.appendChild(el("div", "template-card-name", "No templates available"))
+      container.appendChild(emptyCard)
+      return
+    }
+
+    // Fetch workspace counts per template
+    fetch(apiPathWithToken("/api/workspaces"), { headers: authHeaders() })
+      .then(function (r) { return r.ok ? r.json() : { workspaces: [] } })
+      .then(function (data) {
+        var counts = {}
+        var ws = data.workspaces || []
+        for (var i = 0; i < ws.length; i++) {
+          if (ws[i].template) {
+            counts[ws[i].template] = (counts[ws[i].template] || 0) + 1
+          }
+        }
+        renderTemplateCards(container, templates, counts)
+      })
+      .catch(function () {
+        renderTemplateCards(container, templates, {})
+      })
+  }
+
+  function renderTemplateCards(container, templates, usedByCounts) {
+    clearChildren(container)
+    var grid = el("div", "template-grid")
+    for (var i = 0; i < templates.length; i++) {
+      grid.appendChild(createTemplateCard(templates[i], usedByCounts[templates[i].name] || 0))
+    }
+    container.appendChild(grid)
+  }
+
+  function createTemplateCard(tmpl, usedByCount) {
+    var card = el("div", "template-card")
+
+    // Top row: name + built-in badge
+    var top = el("div", "template-card-top")
+    top.appendChild(el("span", "template-card-name", tmpl.name))
+    if (tmpl.builtIn) {
+      top.appendChild(el("span", "template-badge-builtin", "built-in"))
+    }
+    card.appendChild(top)
+
+    // Description
+    if (tmpl.description) {
+      card.appendChild(el("div", "template-card-desc", tmpl.description))
+    }
+
+    // Image
+    card.appendChild(el("div", "template-card-image", "\u25A3 " + tmpl.image))
+
+    // Resources
+    var resources = []
+    if (tmpl.cpuDefault) resources.push(tmpl.cpuDefault + " CPU")
+    if (tmpl.memoryDefault) resources.push(formatBytes(tmpl.memoryDefault) + " RAM")
+    if (resources.length) {
+      card.appendChild(el("div", "template-card-resources", resources.join(" \u00B7 ")))
+    }
+
+    // Tags
+    if (tmpl.tags && tmpl.tags.length) {
+      var tagsRow = el("div", "template-card-tags")
+      for (var i = 0; i < tmpl.tags.length; i++) {
+        tagsRow.appendChild(el("span", "template-tag", tmpl.tags[i]))
+      }
+      card.appendChild(tagsRow)
+    }
+
+    // Used by count
+    if (usedByCount > 0) {
+      card.appendChild(el("div", "template-card-usage", "Used by " + usedByCount + " workspace" + (usedByCount !== 1 ? "s" : "")))
+    }
+
+    // Create workspace button
+    var createBtn = el("button", "template-create-btn", "Create Workspace")
+    createBtn.addEventListener("click", function () {
+      openAddProjectModalWithTemplate(tmpl)
+    })
+    card.appendChild(createBtn)
+
+    return card
+  }
+
+  function openAddProjectModalWithTemplate(tmpl) {
+    openAddProjectModal()
+    applyTemplateToModal(tmpl)
+  }
+
+  function applyTemplateToModal(tmpl) {
+    // Set container mode to "provision"
+    var radios = document.querySelectorAll('input[name="container-mode"]')
+    for (var i = 0; i < radios.length; i++) {
+      radios[i].checked = radios[i].value === "provision"
+    }
+    updateContainerFields()
+
+    // Fill fields from template
+    if (addProjectImage) addProjectImage.value = tmpl.image || ""
+    if (addProjectCpu) addProjectCpu.value = tmpl.cpuDefault || 2
+    if (addProjectMem) addProjectMem.value = tmpl.memoryDefault ? (tmpl.memoryDefault / (1024 * 1024 * 1024)).toFixed(1) : "2"
+
+    // Highlight template in picker
+    highlightTemplatePicker(tmpl.name)
+
+    // Store template name for submission
+    if (addProjectModal) addProjectModal.dataset.template = tmpl.name
+  }
+
+  function highlightTemplatePicker(name) {
+    var btns = document.querySelectorAll(".template-pick-btn")
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].dataset.template === name) {
+        btns[i].classList.add("template-pick-btn--active")
+      } else {
+        btns[i].classList.remove("template-pick-btn--active")
+      }
+    }
+  }
+
+  function populateTemplatePicker() {
+    var pickerEl = document.getElementById("template-picker")
+    if (!pickerEl) return
+
+    clearChildren(pickerEl)
+
+    // "Custom" option
+    var customBtn = el("button", "template-pick-btn template-pick-btn--active", "Custom")
+    customBtn.type = "button"
+    customBtn.dataset.template = ""
+    customBtn.addEventListener("click", function () {
+      highlightTemplatePicker("")
+      if (addProjectModal) addProjectModal.dataset.template = ""
+    })
+    pickerEl.appendChild(customBtn)
+
+    fetch(apiPathWithToken("/api/templates"), { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("templates fetch failed")
+        return r.json()
+      })
+      .then(function (data) {
+        var templates = data.templates || []
+        for (var i = 0; i < templates.length; i++) {
+          (function (tmpl) {
+            var btn = el("button", "template-pick-btn", tmpl.name)
+            btn.type = "button"
+            btn.dataset.template = tmpl.name
+            btn.addEventListener("click", function () {
+              applyTemplateToModal(tmpl)
+            })
+            pickerEl.appendChild(btn)
+          })(templates[i])
+        }
+      })
+      .catch(function () {
+        // API not available — picker stays with just "Custom"
+      })
   }
 
   // ── Filter bar ────────────────────────────────────────────────────
@@ -2167,6 +2386,7 @@
     if (addProjectImage) addProjectImage.value = ""
     if (addProjectCpu) addProjectCpu.value = "2"
     if (addProjectMem) addProjectMem.value = "2"
+    if (addProjectModal) addProjectModal.dataset.template = ""
     setProjectStatus("")
     // Reset radio to "none"
     var radios = document.querySelectorAll('input[name="container-mode"]')
@@ -2174,6 +2394,7 @@
       radios[i].checked = radios[i].value === "none"
     }
     updateContainerFields()
+    populateTemplatePicker()
     if (addProjectModal) addProjectModal.classList.add("open")
     if (addProjectBackdrop) addProjectBackdrop.classList.add("open")
     if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "false")
@@ -2225,6 +2446,10 @@
 
     var body = { repo: repo, name: name, path: path }
     if (keywords) body.keywords = keywords.split(",").map(function (k) { return k.trim() }).filter(Boolean)
+
+    // Include template if one was selected.
+    var selectedTemplate = addProjectModal ? (addProjectModal.dataset.template || "") : ""
+    if (selectedTemplate) body.template = selectedTemplate
 
     if (mode === "existing") {
       // Read from dropdown or fallback custom input

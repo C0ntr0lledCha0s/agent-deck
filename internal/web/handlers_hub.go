@@ -629,6 +629,31 @@ func (s *Server) handleProjectsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve template defaults if specified.
+	if req.Template != "" && s.hubTemplates != nil {
+		tmpl, tmplErr := s.hubTemplates.Get(req.Template)
+		if tmplErr != nil {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "template not found: "+req.Template)
+			return
+		}
+		// Apply template defaults where request values are empty/zero.
+		if req.Image == "" {
+			req.Image = tmpl.Image
+		}
+		if req.CPULimit == 0 {
+			req.CPULimit = tmpl.CPUDefault
+		}
+		if req.MemoryLimit == 0 {
+			req.MemoryLimit = tmpl.MemoryDefault
+		}
+		if len(req.Volumes) == 0 {
+			req.Volumes = tmpl.Volumes
+		}
+		if len(req.Env) == 0 {
+			req.Env = tmpl.Env
+		}
+	}
+
 	// Check for duplicates.
 	if existing, _ := s.hubProjects.Get(name); existing != nil {
 		writeAPIError(w, http.StatusConflict, "CONFLICT", "project already exists: "+name)
@@ -657,6 +682,7 @@ func (s *Server) handleProjectsCreate(w http.ResponseWriter, r *http.Request) {
 		MemoryLimit: req.MemoryLimit,
 		Volumes:     req.Volumes,
 		Env:         req.Env,
+		Template:    req.Template,
 	}
 
 	if err := s.hubProjects.Save(project); err != nil {
@@ -867,6 +893,7 @@ type createProjectRequest struct {
 	MemoryLimit int64             `json:"memoryLimit,omitempty"`
 	Volumes     []hub.VolumeMount `json:"volumes,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
+	Template    string            `json:"template,omitempty"`
 }
 
 type updateProjectRequest struct {
@@ -1042,6 +1069,7 @@ type workspaceView struct {
 	MemUsage        int64   `json:"memUsage,omitempty"`
 	MemLimit        int64   `json:"memLimit,omitempty"`
 	ActiveTasks     int     `json:"activeTasks"`
+	Template        string  `json:"template,omitempty"`
 }
 
 type workspacesListResponse struct {
@@ -1097,6 +1125,7 @@ func (s *Server) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
 			Container:       p.Container,
 			ContainerStatus: workspace.StatusNotCreated,
 			ActiveTasks:     taskCounts[p.Name],
+			Template:        p.Template,
 		}
 
 		// Query container status if a container name is set and runtime is available.
@@ -1390,4 +1419,175 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 		Confidence:      result.Confidence,
 		MatchedKeywords: result.MatchedKeywords,
 	})
+}
+
+// ── Template API handlers ─────────────────────────────────────────────
+
+type templatesListResponse struct {
+	Templates []*hub.Template `json:"templates"`
+}
+
+type templateDetailResponse struct {
+	Template *hub.Template `json:"template"`
+}
+
+type createTemplateRequest struct {
+	Name          string            `json:"name"`
+	Description   string            `json:"description,omitempty"`
+	Image         string            `json:"image"`
+	CPUDefault    float64           `json:"cpuDefault,omitempty"`
+	MemoryDefault int64             `json:"memoryDefault,omitempty"`
+	Volumes       []hub.VolumeMount `json:"volumes,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Tags          []string          `json:"tags,omitempty"`
+}
+
+// handleTemplates dispatches GET /api/templates and POST /api/templates.
+func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.handleTemplatesList(w, r)
+	case http.MethodPost:
+		s.handleTemplatesCreate(w, r)
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	}
+}
+
+// handleTemplatesList serves GET /api/templates.
+func (s *Server) handleTemplatesList(w http.ResponseWriter, r *http.Request) {
+	if s.hubTemplates == nil {
+		writeJSON(w, http.StatusOK, templatesListResponse{Templates: []*hub.Template{}})
+		return
+	}
+
+	templates, err := s.hubTemplates.List()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load templates")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, templatesListResponse{Templates: templates})
+}
+
+// handleTemplatesCreate serves POST /api/templates.
+func (s *Server) handleTemplatesCreate(w http.ResponseWriter, r *http.Request) {
+	if s.hubTemplates == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	var req createTemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	if req.Name == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "name is required")
+		return
+	}
+	if req.Image == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "image is required")
+		return
+	}
+
+	// Check for duplicates (including built-ins).
+	if existing, _ := s.hubTemplates.Get(req.Name); existing != nil {
+		writeAPIError(w, http.StatusConflict, "CONFLICT", "template already exists: "+req.Name)
+		return
+	}
+
+	tmpl := &hub.Template{
+		Name:          req.Name,
+		Description:   req.Description,
+		Image:         req.Image,
+		CPUDefault:    req.CPUDefault,
+		MemoryDefault: req.MemoryDefault,
+		Volumes:       req.Volumes,
+		Env:           req.Env,
+		Tags:          req.Tags,
+	}
+
+	if err := s.hubTemplates.Save(tmpl); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create template")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, templateDetailResponse{Template: tmpl})
+}
+
+// handleTemplateByName dispatches /api/templates/{name} for GET and DELETE.
+func (s *Server) handleTemplateByName(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+
+	const prefix = "/api/templates/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, prefix)
+	if name == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "template name is required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.handleTemplateGet(w, r, name)
+	case http.MethodDelete:
+		s.handleTemplateDelete(w, r, name)
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	}
+}
+
+// handleTemplateGet serves GET /api/templates/{name}.
+func (s *Server) handleTemplateGet(w http.ResponseWriter, _ *http.Request, name string) {
+	if s.hubTemplates == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "template not found")
+		return
+	}
+
+	tmpl, err := s.hubTemplates.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "template not found: "+name)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, templateDetailResponse{Template: tmpl})
+}
+
+// handleTemplateDelete serves DELETE /api/templates/{name}.
+func (s *Server) handleTemplateDelete(w http.ResponseWriter, _ *http.Request, name string) {
+	if s.hubTemplates == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	// Check if it's a built-in template — return 403.
+	tmpl, err := s.hubTemplates.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "template not found: "+name)
+		return
+	}
+	if tmpl.BuiltIn {
+		writeAPIError(w, http.StatusForbidden, "FORBIDDEN", "cannot delete built-in template")
+		return
+	}
+
+	if err := s.hubTemplates.Delete(name); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete template")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

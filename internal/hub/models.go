@@ -55,14 +55,14 @@ type Session struct {
 
 // Task wraps a session with orchestration metadata.
 type Task struct {
-	ID           string     `json:"id"`
-	SessionID    string     `json:"sessionId"`
-	TmuxSession  string     `json:"tmuxSession,omitempty"`
-	Status       TaskStatus `json:"status"`
-	Project      string     `json:"project"`
-	Description  string     `json:"description"`
-	Phase        Phase      `json:"phase"`
-	Branch       string     `json:"branch,omitempty"`
+	ID           string      `json:"id"`
+	SessionID    string      `json:"sessionId"`
+	TmuxSession  string      `json:"tmuxSession,omitempty"`
+	Status       TaskStatus  `json:"status"`
+	Project      string      `json:"project"`
+	Description  string      `json:"description"`
+	Phase        Phase       `json:"phase"`
+	Branch       string      `json:"branch,omitempty"`
 	Skills       []string    `json:"skills,omitempty"`
 	MCPs         []string    `json:"mcps,omitempty"`
 	Diff         *DiffInfo   `json:"diff,omitempty"`
@@ -70,9 +70,9 @@ type Task struct {
 	AskQuestion  string      `json:"askQuestion,omitempty"`
 	AgentStatus  AgentStatus `json:"agentStatus"`
 	Sessions     []Session   `json:"sessions,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
-	ParentTaskID string     `json:"parentTaskId,omitempty"`
+	CreatedAt    time.Time   `json:"createdAt"`
+	UpdatedAt    time.Time   `json:"updatedAt"`
+	ParentTaskID string      `json:"parentTaskId,omitempty"`
 }
 
 // VolumeMount describes a bind mount for container provisioning.
@@ -99,9 +99,25 @@ type Project struct {
 	MemoryLimit int64             `json:"memoryLimit,omitempty"`
 	Volumes     []VolumeMount     `json:"volumes,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
+	Template    string            `json:"template,omitempty"`
 
 	// Runtime state (not persisted, populated at query time).
 	ContainerStatus string `json:"containerStatus,omitempty"`
+}
+
+// Template defines a reusable workspace preset for container provisioning.
+type Template struct {
+	Name          string            `json:"name"`
+	Description   string            `json:"description,omitempty"`
+	Image         string            `json:"image"`
+	CPUDefault    float64           `json:"cpuDefault,omitempty"`
+	MemoryDefault int64             `json:"memoryDefault,omitempty"`
+	Volumes       []VolumeMount     `json:"volumes,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Tags          []string          `json:"tags,omitempty"`
+	BuiltIn       bool              `json:"builtIn"`
+	CreatedAt     time.Time         `json:"createdAt"`
+	UpdatedAt     time.Time         `json:"updatedAt"`
 }
 
 // RouteResult describes a keyword-match routing result.

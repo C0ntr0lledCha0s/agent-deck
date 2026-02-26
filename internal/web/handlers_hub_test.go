@@ -49,9 +49,15 @@ func newTestServerWithHub(t *testing.T) *Server {
 		ListenAddr: "127.0.0.1:0",
 		Profile:    "test-profile",
 	})
+	templateStore, err := hub.NewTemplateStore(hubDir)
+	if err != nil {
+		t.Fatalf("NewTemplateStore: %v", err)
+	}
+
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{Profile: "test-profile"}}
 	srv.hubTasks = taskStore
 	srv.hubProjects = projectStore
+	srv.hubTemplates = templateStore
 
 	// Initialize bridge with mock storage for tests
 	srv.hubBridge = NewHubSessionBridge("_test", taskStore, projectStore, nil)
@@ -1743,4 +1749,177 @@ func TestTaskCreateAutoStartsStoppedContainer(t *testing.T) {
 
 	assert.Equal(t, http.StatusCreated, rr.Code)
 	assert.Equal(t, 1, mockRT.startCalls, "container should be auto-started")
+}
+
+// ── Template API tests ─────────────────────────────────────────────
+
+func TestTemplatesList(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/templates", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp templatesListResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Templates)
+
+	// Should include the built-in claude-sandbox.
+	found := false
+	for _, tmpl := range resp.Templates {
+		if tmpl.Name == "claude-sandbox" {
+			found = true
+			assert.True(t, tmpl.BuiltIn)
+		}
+	}
+	assert.True(t, found, "claude-sandbox built-in should be in list")
+}
+
+func TestTemplatesCreate(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"name":"my-tmpl","image":"myimg:latest","cpuDefault":4,"tags":["test"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+
+	var resp templateDetailResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "my-tmpl", resp.Template.Name)
+	assert.Equal(t, "myimg:latest", resp.Template.Image)
+	assert.Equal(t, 4.0, resp.Template.CPUDefault)
+	assert.False(t, resp.Template.BuiltIn)
+}
+
+func TestTemplatesCreateDuplicate(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"name":"dup-tmpl","image":"img:1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusCreated, rr.Code)
+
+	// Try to create again — should conflict.
+	req = httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusConflict, rr.Code)
+}
+
+func TestTemplatesCreateBuiltInConflict(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"name":"claude-sandbox","image":"hacked:latest"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusConflict, rr.Code)
+}
+
+func TestTemplateGet(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/templates/claude-sandbox", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp templateDetailResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "claude-sandbox", resp.Template.Name)
+	assert.True(t, resp.Template.BuiltIn)
+}
+
+func TestTemplateDeleteUser(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	// Create a user template first.
+	body := `{"name":"deletable","image":"img:1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	// Delete it.
+	req = httptest.NewRequest(http.MethodDelete, "/api/templates/deletable", nil)
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	// Verify it's gone.
+	req = httptest.NewRequest(http.MethodGet, "/api/templates/deletable", nil)
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+func TestTemplateDeleteBuiltInForbidden(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/templates/claude-sandbox", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+func TestProjectCreateWithTemplate(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	// Create project using the claude-sandbox template.
+	body := `{"name":"tmpl-proj","repo":"org/tmpl-proj","template":"claude-sandbox"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+
+	var resp projectDetailResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "tmpl-proj", resp.Project.Name)
+	assert.Equal(t, "sandbox-image:latest", resp.Project.Image, "should inherit template image")
+	assert.Equal(t, 2.0, resp.Project.CPULimit, "should inherit template CPU")
+	assert.Equal(t, int64(2*1024*1024*1024), resp.Project.MemoryLimit, "should inherit template memory")
+	assert.Equal(t, "claude-sandbox", resp.Project.Template)
+}
+
+func TestProjectCreateWithTemplateOverride(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	// Create project with template but override image.
+	body := `{"name":"override-proj","repo":"org/override-proj","template":"claude-sandbox","image":"custom:v2","cpuLimit":8}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+
+	var resp projectDetailResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "custom:v2", resp.Project.Image, "explicit image should override template")
+	assert.Equal(t, 8.0, resp.Project.CPULimit, "explicit CPU should override template")
+	assert.Equal(t, int64(2*1024*1024*1024), resp.Project.MemoryLimit, "should inherit template memory when not overridden")
+}
+
+func TestProjectCreateWithInvalidTemplate(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"name":"bad-tmpl","repo":"org/bad-tmpl","template":"nonexistent-template"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }

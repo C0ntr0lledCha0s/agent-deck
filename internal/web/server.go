@@ -51,6 +51,7 @@ type Server struct {
 	// Hub dashboard state.
 	hubTasks         *hub.TaskStore
 	hubProjects      *hub.ProjectStore
+	hubTemplates     *hub.TemplateStore
 	containerRuntime workspace.ContainerRuntime
 	containerExec    hub.ContainerExecutor
 	sessionLauncher  *hub.SessionLauncher
@@ -93,6 +94,11 @@ func NewServer(cfg Config) *Server {
 			webLog.Warn("hub_project_store_disabled", slog.String("error", err.Error()))
 		} else {
 			s.hubProjects = ps
+		}
+		if tmplStore, err := hub.NewTemplateStore(hubDir); err != nil {
+			webLog.Warn("hub_template_store_disabled", slog.String("error", err.Error()))
+		} else {
+			s.hubTemplates = tmplStore
 		}
 	}
 
@@ -144,6 +150,8 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProjectByName)
+	mux.HandleFunc("/api/templates", s.handleTemplates)
+	mux.HandleFunc("/api/templates/", s.handleTemplateByName)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/workspaces/", s.handleWorkspaceByName)
 	mux.HandleFunc("/api/route", s.handleRoute)

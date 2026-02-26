@@ -1186,6 +1186,201 @@
   color: var(--text-mid);
 }
 
+.workspace-card-template {
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  color: var(--accent);
+  background: rgba(232, 169, 50, 0.08);
+  border: 1px solid rgba(232, 169, 50, 0.2);
+  border-radius: 3px;
+  padding: 1px 6px;
+  display: inline-block;
+  margin-bottom: 4px;
+}
+
+/* ── Workspaces sub-tab toggle ─────────────────────────────────── */
+
+.ws-toggle-bar {
+  display: flex;
+  gap: 2px;
+  padding: 0 0 12px 0;
+  background: transparent;
+}
+
+.ws-toggle-tab {
+  padding: 4px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  font-weight: 500;
+  transition: background 100ms, color 100ms, border-color 100ms;
+}
+
+.ws-toggle-tab:hover {
+  background: var(--bg-card);
+  color: var(--text-mid);
+}
+
+.ws-toggle-tab--active {
+  background: rgba(232, 169, 50, 0.12);
+  color: var(--accent);
+  border-color: rgba(232, 169, 50, 0.3);
+}
+
+.ws-content {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Template grid + cards ─────────────────────────────────────── */
+
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.template-card {
+  padding: 14px;
+  border-radius: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.template-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.template-card-name {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.template-badge-builtin {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.44rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: rgba(232, 169, 50, 0.1);
+  border: 1px solid rgba(232, 169, 50, 0.25);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.template-card-desc {
+  font-size: 0.69rem;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.template-card-image {
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  color: var(--text-mid);
+}
+
+.template-card-resources {
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  color: var(--text-dim);
+}
+
+.template-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.template-tag {
+  font-family: var(--font-mono);
+  font-size: 0.44rem;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(139, 140, 248, 0.08);
+  color: var(--purple);
+  border: 1px solid rgba(139, 140, 248, 0.2);
+}
+
+.template-card-usage {
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  color: var(--text-dim);
+}
+
+.template-create-btn {
+  margin-top: 4px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(45, 212, 160, 0.3);
+  background: rgba(45, 212, 160, 0.08);
+  color: var(--green);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  font-weight: 600;
+  text-align: center;
+  transition: background 100ms;
+}
+
+.template-create-btn:hover {
+  background: rgba(45, 212, 160, 0.16);
+}
+
+/* ── Template picker in modal ──────────────────────────────────── */
+
+.template-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.template-pick-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  transition: background 100ms, color 100ms, border-color 100ms;
+}
+
+.template-pick-btn:hover {
+  background: var(--bg-card);
+  color: var(--text-mid);
+}
+
+.template-pick-btn--active {
+  background: rgba(232, 169, 50, 0.12);
+  color: var(--accent);
+  border-color: rgba(232, 169, 50, 0.3);
+}
+
+/* ── Mobile responsive: template grid ──────────────────────────── */
+
+@media (max-width: 600px) {
+  .template-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── Terminal container ────────────────────────────────────────── */
 
 .terminal-container {
