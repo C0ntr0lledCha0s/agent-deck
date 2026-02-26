@@ -1724,3 +1724,23 @@ func TestProjectCreateAutoProvision(t *testing.T) {
 	assert.Equal(t, "agentdeck-auto-app", resp.Project.Container)
 	assert.Equal(t, "node:20", resp.Project.Image)
 }
+
+func TestTaskCreateAutoStartsStoppedContainer(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	mockRT := &mockContainerRuntime{
+		state: workspace.ContainerState{Status: workspace.StatusStopped},
+	}
+	srv.containerRuntime = mockRT
+
+	// Create project with an existing container reference
+	p := &hub.Project{Name: "myapp", Path: "/workspace/myapp", Container: "agentdeck-myapp", Image: "sandbox:latest"}
+	require.NoError(t, srv.hubProjects.Save(p))
+
+	body := `{"project":"myapp","description":"Fix bug"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+	assert.Equal(t, 1, mockRT.startCalls, "container should be auto-started")
+}

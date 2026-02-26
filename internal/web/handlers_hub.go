@@ -113,6 +113,21 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-start a stopped container before launching the session.
+	if s.containerRuntime != nil && s.hubProjects != nil {
+		if proj, projErr := s.hubProjects.Get(task.Project); projErr == nil && proj.Container != "" && proj.Image != "" {
+			state, _ := s.containerRuntime.Status(r.Context(), proj.Container)
+			if state.Status == workspace.StatusStopped {
+				if startErr := s.containerRuntime.Start(r.Context(), proj.Container); startErr != nil {
+					slog.Warn("container_auto_start_failed",
+						slog.String("task", task.ID),
+						slog.String("container", proj.Container),
+						slog.String("error", startErr.Error()))
+				}
+			}
+		}
+	}
+
 	// Auto-start phase session via bridge (local sessions).
 	// Bridge handles projects with a local path but no container.
 	// Container-based launch is preferred when a container is configured.
