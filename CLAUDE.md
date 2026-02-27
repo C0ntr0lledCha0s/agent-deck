@@ -108,6 +108,22 @@ make build
 
 **Note:** The `web` subcommand starts the TUI alongside the web server — both run together. A running tmux server is required for sessions to appear. Static assets (HTML, CSS, JS) are embedded in the binary at build time via `//go:embed` in `internal/web/static_files.go`, so changes to files under `internal/web/static/` require a rebuild to take effect.
 
+**Important:** `agent-deck web` (TUI mode) cannot run inside an agent-deck session (recursion guard). Use headless mode instead:
+
+**Recommended (headless mode — full backend):**
+```bash
+./build/agent-deck web --headless
+# Open: http://127.0.0.1:8420
+# Full API + dashboard, works inside agent-deck sessions
+```
+
+**Fallback (static files only — no APIs):**
+```bash
+cd internal/web && python3 -m http.server 8422 --bind 127.0.0.1
+# Open: http://127.0.0.1:8422/static/dashboard.html
+# API calls will 404 — this is expected, only the UI renders.
+```
+
 ## Git Hooks (lefthook)
 
 - **pre-commit**: `gofmt` check + `go vet` (parallel)

@@ -192,6 +192,30 @@ func TestServiceWorkerServed(t *testing.T) {
 	}
 }
 
+func TestHeadlessServerHealthz(t *testing.T) {
+	// Headless mode passes nil MenuData — verify the server works correctly.
+	srv := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		Profile:    "test",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, `"ok":true`) {
+		t.Fatalf("expected health response to contain ok=true, got: %s", body)
+	}
+	if !strings.Contains(body, `"profile":"test"`) {
+		t.Fatalf("expected health response to contain profile, got: %s", body)
+	}
+}
+
 func TestNotifyMenuChangedEmitsEvent(t *testing.T) {
 	srv := NewServer(Config{
 		ListenAddr: "127.0.0.1:0",

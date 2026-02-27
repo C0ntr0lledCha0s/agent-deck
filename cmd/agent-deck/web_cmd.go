@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -25,12 +29,14 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) 
 		fmt.Println("Usage: agent-deck web [options]")
 		fmt.Println()
 		fmt.Println("Start the TUI with web UI server running alongside.")
+		fmt.Println("Use --headless to run only the web server (no TUI).")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck web")
+		fmt.Println("  agent-deck web --headless")
 		fmt.Println("  agent-deck -p work web --listen 127.0.0.1:9000")
 		fmt.Println("  agent-deck web --read-only")
 		fmt.Println("  agent-deck web --push")
@@ -85,4 +91,45 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) 
 	})
 
 	return server, nil
+}
+
+// handleWebHeadless starts only the HTTP server without the TUI.
+// This bypasses the recursion guard, allowing the full dashboard (with APIs)
+// to run inside an agent-deck session or any headless environment.
+func handleWebHeadless(profile string, args []string) {
+	// Strip --headless from args (buildWebServer's FlagSet doesn't know it)
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		if a != "--headless" && a != "-headless" {
+			filtered = append(filtered, a)
+		}
+	}
+
+	server, err := buildWebServer(profile, filtered, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	fmt.Printf("Agent Deck web server (headless): http://%s\n", server.Addr())
+	fmt.Println("Press Ctrl+C to stop.")
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Start() }()
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("\nShutting down...")
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+			os.Exit(1)
+		}
+	}
 }

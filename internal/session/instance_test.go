@@ -2388,6 +2388,32 @@ func TestCurrentComposerPrompt_UsesBottomComposerBlock(t *testing.T) {
 
 // TestKillClearsCachedPrompt verifies that Kill() clears cached prompt data
 // so that memory is freed when Instance objects remain referenced in storage.
+// TestStartWithMessage_CreatesTmuxSession proves that StartWithMessage creates a real tmux session.
+// Uses tool "shell" with Command "bash" to avoid dependency on Claude being installed.
+// Empty message skips sendMessageWhenReady so the call returns immediately.
+func TestStartWithMessage_CreatesTmuxSession(t *testing.T) {
+	skipIfNoTmuxServer(t)
+
+	inst := NewInstanceWithGroupAndTool("hub-startwithmsg-test", "/tmp", "hub", "shell")
+	inst.Command = "bash"
+
+	err := inst.StartWithMessage("")
+	if err != nil {
+		t.Fatalf("StartWithMessage failed: %v", err)
+	}
+	defer func() { _ = inst.Kill() }()
+
+	// Verify tmux session exists
+	if !inst.Exists() {
+		t.Fatal("tmux session should exist after StartWithMessage")
+	}
+
+	// Verify status
+	if inst.Status != StatusStarting {
+		t.Errorf("Status = %s, want StatusStarting", inst.Status)
+	}
+}
+
 func TestKillClearsCachedPrompt(t *testing.T) {
 	skipIfNoTmuxServer(t)
 

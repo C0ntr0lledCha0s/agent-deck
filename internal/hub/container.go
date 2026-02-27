@@ -1,11 +1,9 @@
 package hub
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"os/exec"
-	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/hub/workspace"
 )
 
 // ContainerExecutor abstracts docker exec operations for testability.
@@ -16,28 +14,22 @@ type ContainerExecutor interface {
 	Exec(ctx context.Context, container string, args ...string) (string, error)
 }
 
-// DockerExecutor implements ContainerExecutor via the docker CLI.
-type DockerExecutor struct{}
+// RuntimeExecutor adapts a workspace.ContainerRuntime to the ContainerExecutor interface.
+type RuntimeExecutor struct {
+	Runtime workspace.ContainerRuntime
+}
 
-// IsHealthy checks if a container is running via docker inspect.
-func (d *DockerExecutor) IsHealthy(ctx context.Context, container string) bool {
-	cmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", container)
-	out, err := cmd.Output()
+// IsHealthy checks if the container is running via the ContainerRuntime.
+func (r *RuntimeExecutor) IsHealthy(ctx context.Context, container string) bool {
+	state, err := r.Runtime.Status(ctx, container)
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) == "true"
+	return state.Status == workspace.StatusRunning
 }
 
-// Exec runs a command inside a container via docker exec.
-func (d *DockerExecutor) Exec(ctx context.Context, container string, args ...string) (string, error) {
-	cmdArgs := append([]string{"exec", container}, args...)
-	cmd := exec.CommandContext(ctx, "docker", cmdArgs...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("docker exec %s: %w (stderr: %s)", container, err, stderr.String())
-	}
-	return stdout.String(), nil
+// Exec runs a command inside a container via the ContainerRuntime.
+func (r *RuntimeExecutor) Exec(ctx context.Context, container string, args ...string) (string, error) {
+	out, _, err := r.Runtime.Exec(ctx, container, args, nil)
+	return string(out), err
 }

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,10 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
+	"github.com/asheshgoplani/agent-deck/internal/hub/workspace"
+	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testExecutor struct {
@@ -44,11 +49,32 @@ func newTestServerWithHub(t *testing.T) *Server {
 		ListenAddr: "127.0.0.1:0",
 		Profile:    "test-profile",
 	})
+	templateStore, err := hub.NewTemplateStore(hubDir)
+	if err != nil {
+		t.Fatalf("NewTemplateStore: %v", err)
+	}
+
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{Profile: "test-profile"}}
 	srv.hubTasks = taskStore
 	srv.hubProjects = projectStore
+	srv.hubTemplates = templateStore
+
+	// Initialize bridge with mock storage for tests
+	srv.hubBridge = NewHubSessionBridge("_test", taskStore, projectStore, nil)
+	srv.hubBridge.openStorage = func(profile string) (storageLoader, error) {
+		return &testStorageLoader{}, nil
+	}
+
 	return srv
 }
+
+type testStorageLoader struct{}
+
+func (t *testStorageLoader) LoadWithGroups() ([]*session.Instance, []*session.GroupData, error) {
+	return nil, nil, nil
+}
+
+func (t *testStorageLoader) Close() error { return nil }
 
 func TestTasksEndpointEmpty(t *testing.T) {
 	srv := newTestServerWithHub(t)
@@ -1434,4 +1460,466 @@ func TestProjectsEndpointUnauthorized(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected %d, got %d", http.StatusUnauthorized, rr.Code)
 	}
+}
+
+// --- Hub-Session Bridge endpoint tests ---
+
+func TestStartPhaseEndpoint(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	proj := &hub.Project{Name: "api-service", Path: "/tmp/test-project", Keywords: []string{"api"}}
+	require.NoError(t, srv.hubProjects.Save(proj))
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseBrainstorm,
+		Status:      hub.TaskStatusBacklog,
+		AgentStatus: hub.AgentStatusIdle,
+	}
+	require.NoError(t, srv.hubTasks.Save(task))
+
+	body := strings.NewReader(`{"phase":"brainstorm"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/start-phase", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp startPhaseResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	assert.NotEmpty(t, resp.SessionID)
+	assert.Equal(t, "brainstorm", resp.Phase)
+}
+
+func TestTransitionEndpoint(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	proj := &hub.Project{Name: "api-service", Path: "/tmp/test-project", Keywords: []string{"api"}}
+	require.NoError(t, srv.hubProjects.Save(proj))
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseBrainstorm,
+		Status:      hub.TaskStatusRunning,
+		Sessions: []hub.Session{
+			{ID: "t-001-brainstorm", Phase: hub.PhaseBrainstorm, Status: "active", ClaudeSessionID: "sess-old"},
+		},
+	}
+	require.NoError(t, srv.hubTasks.Save(task))
+
+	body := strings.NewReader(`{"nextPhase":"plan","summary":"Done brainstorming"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/transition", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp startPhaseResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	assert.Equal(t, "plan", resp.Phase)
+}
+
+func TestTaskCreate_AutoStartsPhaseSession(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	proj := &hub.Project{Name: "api-service", Path: "/tmp/test-project", Keywords: []string{"api"}}
+	require.NoError(t, srv.hubProjects.Save(proj))
+
+	body := strings.NewReader(`{"project":"api-service","description":"Fix auth bug","phase":"brainstorm"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+
+	var resp taskDetailResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+
+	// Task should have a session entry from the bridge
+	assert.Len(t, resp.Task.Sessions, 1)
+	assert.Equal(t, hub.PhaseBrainstorm, resp.Task.Sessions[0].Phase)
+	assert.Equal(t, "active", resp.Task.Sessions[0].Status)
+	assert.NotEmpty(t, resp.Task.Sessions[0].ClaudeSessionID)
+	assert.Equal(t, hub.TaskStatusRunning, resp.Task.Status)
+}
+
+func TestFullHubSessionFlow(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	proj := &hub.Project{Name: "api-service", Path: "/tmp/test-project", Keywords: []string{"api"}}
+	require.NoError(t, srv.hubProjects.Save(proj))
+
+	// 1. Create task — should auto-start brainstorm phase session
+	body := strings.NewReader(`{"project":"api-service","description":"Fix auth bug","phase":"brainstorm"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	var createResp taskDetailResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&createResp))
+	taskID := createResp.Task.ID
+	assert.Len(t, createResp.Task.Sessions, 1)
+
+	// 2. Transition to plan
+	body = strings.NewReader(`{"nextPhase":"plan","summary":"Explored approaches"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/tasks/"+taskID+"/transition", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	// 3. Verify task has 2 sessions via GET
+	req = httptest.NewRequest(http.MethodGet, "/api/tasks/"+taskID, nil)
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var getResp taskDetailResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&getResp))
+	assert.Len(t, getResp.Task.Sessions, 2)
+	assert.Equal(t, "complete", getResp.Task.Sessions[0].Status)
+	assert.Equal(t, "Explored approaches", getResp.Task.Sessions[0].Summary)
+	assert.Equal(t, "active", getResp.Task.Sessions[1].Status)
+	assert.Equal(t, hub.PhasePlan, getResp.Task.Phase)
+}
+
+// --- mockContainerRuntime for workspace tests ---
+
+type mockContainerRuntime struct {
+	createCalls int
+	startCalls  int
+	stopCalls   int
+	removeCalls int
+	createID    string
+	state       workspace.ContainerState
+	stats       workspace.ContainerStats
+}
+
+func (m *mockContainerRuntime) Create(_ context.Context, opts workspace.CreateOpts) (string, error) {
+	m.createCalls++
+	if m.createID != "" {
+		return m.createID, nil
+	}
+	return opts.Name, nil
+}
+
+func (m *mockContainerRuntime) Start(_ context.Context, _ string) error {
+	m.startCalls++
+	return nil
+}
+
+func (m *mockContainerRuntime) Stop(_ context.Context, _ string, _ int) error {
+	m.stopCalls++
+	return nil
+}
+
+func (m *mockContainerRuntime) Remove(_ context.Context, _ string, _ bool) error {
+	m.removeCalls++
+	return nil
+}
+
+func (m *mockContainerRuntime) Status(_ context.Context, _ string) (workspace.ContainerState, error) {
+	return m.state, nil
+}
+
+func (m *mockContainerRuntime) Stats(_ context.Context, _ string) (workspace.ContainerStats, error) {
+	return m.stats, nil
+}
+
+func (m *mockContainerRuntime) Exec(_ context.Context, _ string, _ []string, _ io.Reader) ([]byte, int, error) {
+	return nil, 0, nil
+}
+
+// --- Workspace endpoint tests ---
+
+func TestWorkspacesListEmpty(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var resp workspacesListResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	assert.Empty(t, resp.Workspaces)
+}
+
+func TestWorkspacesListWithProject(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	mock := &mockContainerRuntime{
+		state: workspace.ContainerState{Status: workspace.StatusRunning},
+	}
+	srv.containerRuntime = mock
+
+	// Create a project with a container name.
+	project := &hub.Project{
+		Name:      "my-app",
+		Repo:      "github.com/org/my-app",
+		Path:      "/home/user/my-app",
+		Image:     "ubuntu:24.04",
+		Container: "agentdeck-my-app",
+	}
+	require.NoError(t, srv.hubProjects.Save(project))
+
+	// Create an active task for the project.
+	task := &hub.Task{
+		Project:     "my-app",
+		Description: "Fix bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+		AgentStatus: hub.AgentStatusThinking,
+	}
+	require.NoError(t, srv.hubTasks.Save(task))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var resp workspacesListResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	require.Len(t, resp.Workspaces, 1)
+
+	ws := resp.Workspaces[0]
+	assert.Equal(t, "my-app", ws.Name)
+	assert.Equal(t, "github.com/org/my-app", ws.Repo)
+	assert.Equal(t, "agentdeck-my-app", ws.Container)
+	assert.Equal(t, workspace.StatusRunning, ws.ContainerStatus)
+	assert.Equal(t, "ubuntu:24.04", ws.Image)
+	assert.Equal(t, 1, ws.ActiveTasks)
+}
+
+func TestProjectCreateAutoProvision(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	mock := &mockContainerRuntime{}
+	srv.containerRuntime = mock
+
+	body := strings.NewReader(`{
+		"repo": "github.com/org/auto-app",
+		"name": "auto-app",
+		"path": "/tmp/auto-app",
+		"image": "node:20",
+		"cpuLimit": 2.0,
+		"memoryLimit": 1073741824,
+		"keywords": ["auto"]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	// Verify the container runtime was called.
+	assert.Equal(t, 1, mock.createCalls, "expected Create to be called once")
+	assert.Equal(t, 1, mock.startCalls, "expected Start to be called once")
+
+	// Verify the project was saved with the container name.
+	var resp projectDetailResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	assert.Equal(t, "agentdeck-auto-app", resp.Project.Container)
+	assert.Equal(t, "node:20", resp.Project.Image)
+}
+
+func TestTaskCreateAutoStartsStoppedContainer(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	mockRT := &mockContainerRuntime{
+		state: workspace.ContainerState{Status: workspace.StatusStopped},
+	}
+	srv.containerRuntime = mockRT
+
+	// Create project with an existing container reference
+	p := &hub.Project{Name: "myapp", Path: "/workspace/myapp", Container: "agentdeck-myapp", Image: "sandbox:latest"}
+	require.NoError(t, srv.hubProjects.Save(p))
+
+	body := `{"project":"myapp","description":"Fix bug"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+	assert.Equal(t, 1, mockRT.startCalls, "container should be auto-started")
+}
+
+// ── Template API tests ─────────────────────────────────────────────
+
+func TestTemplatesList(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/templates", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp templatesListResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Templates)
+
+	// Should include the built-in claude-sandbox.
+	found := false
+	for _, tmpl := range resp.Templates {
+		if tmpl.Name == "claude-sandbox" {
+			found = true
+			assert.True(t, tmpl.BuiltIn)
+		}
+	}
+	assert.True(t, found, "claude-sandbox built-in should be in list")
+}
+
+func TestTemplatesCreate(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"name":"my-tmpl","image":"myimg:latest","cpuDefault":4,"tags":["test"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+
+	var resp templateDetailResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "my-tmpl", resp.Template.Name)
+	assert.Equal(t, "myimg:latest", resp.Template.Image)
+	assert.Equal(t, 4.0, resp.Template.CPUDefault)
+	assert.False(t, resp.Template.BuiltIn)
+}
+
+func TestTemplatesCreateDuplicate(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"name":"dup-tmpl","image":"img:1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusCreated, rr.Code)
+
+	// Try to create again — should conflict.
+	req = httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusConflict, rr.Code)
+}
+
+func TestTemplatesCreateBuiltInConflict(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"name":"claude-sandbox","image":"hacked:latest"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusConflict, rr.Code)
+}
+
+func TestTemplateGet(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/templates/claude-sandbox", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp templateDetailResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "claude-sandbox", resp.Template.Name)
+	assert.True(t, resp.Template.BuiltIn)
+}
+
+func TestTemplateDeleteUser(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	// Create a user template first.
+	body := `{"name":"deletable","image":"img:1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/templates", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	// Delete it.
+	req = httptest.NewRequest(http.MethodDelete, "/api/templates/deletable", nil)
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	// Verify it's gone.
+	req = httptest.NewRequest(http.MethodGet, "/api/templates/deletable", nil)
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+func TestTemplateDeleteBuiltInForbidden(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/templates/claude-sandbox", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+func TestProjectCreateWithTemplate(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	// Create project using the claude-sandbox template.
+	body := `{"name":"tmpl-proj","repo":"org/tmpl-proj","template":"claude-sandbox"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+
+	var resp projectDetailResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "tmpl-proj", resp.Project.Name)
+	assert.Equal(t, "sandbox-image:latest", resp.Project.Image, "should inherit template image")
+	assert.Equal(t, 2.0, resp.Project.CPULimit, "should inherit template CPU")
+	assert.Equal(t, int64(2*1024*1024*1024), resp.Project.MemoryLimit, "should inherit template memory")
+	assert.Equal(t, "claude-sandbox", resp.Project.Template)
+}
+
+func TestProjectCreateWithTemplateOverride(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	// Create project with template but override image.
+	body := `{"name":"override-proj","repo":"org/override-proj","template":"claude-sandbox","image":"custom:v2","cpuLimit":8}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+
+	var resp projectDetailResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "custom:v2", resp.Project.Image, "explicit image should override template")
+	assert.Equal(t, 8.0, resp.Project.CPULimit, "explicit CPU should override template")
+	assert.Equal(t, int64(2*1024*1024*1024), resp.Project.MemoryLimit, "should inherit template memory when not overridden")
+}
+
+func TestProjectCreateWithInvalidTemplate(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"name":"bad-tmpl","repo":"org/bad-tmpl","template":"nonexistent-template"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
