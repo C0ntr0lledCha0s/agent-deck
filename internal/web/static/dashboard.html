@@ -154,13 +154,39 @@
           <label class="modal-label" for="new-task-desc">Description</label>
           <textarea id="new-task-desc" class="modal-textarea" rows="3" placeholder="What should the agent do?"></textarea>
           <div class="route-suggestion" id="route-suggestion"></div>
-          <label class="modal-label" for="new-task-phase">Phase</label>
-          <select id="new-task-phase" class="hub-select modal-field">
-            <option value="execute">Execute</option>
-            <option value="brainstorm">Brainstorm</option>
-            <option value="plan">Plan</option>
-            <option value="review">Review</option>
-          </select>
+          <div class="form-section-header" id="new-task-agent-config-header">Agent Config</div>
+          <div class="form-group">
+            <label class="modal-label" for="new-task-tool">Tool</label>
+            <select id="new-task-tool" class="hub-select modal-field">
+              <option value="claude">Claude</option>
+              <option value="gemini">Gemini</option>
+              <option value="opencode">OpenCode</option>
+              <option value="codex">Codex</option>
+            </select>
+          </div>
+          <div class="form-section-header collapsible" id="new-task-advanced-toggle">
+            Advanced <span class="toggle-caret">&#x25BE;</span>
+          </div>
+          <div id="new-task-advanced" class="form-section-collapsed">
+            <div class="form-group">
+              <label class="modal-label" for="new-task-phase">Phase</label>
+              <select id="new-task-phase" class="hub-select modal-field">
+                <option value="execute">Execute</option>
+                <option value="brainstorm">Brainstorm</option>
+                <option value="plan">Plan</option>
+                <option value="review">Review</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="radio-label">
+                <input type="checkbox" id="new-task-worktree" /> Create in worktree
+              </label>
+            </div>
+            <div class="form-group" id="new-task-branch-group" style="display:none">
+              <label class="modal-label" for="new-task-branch">Branch</label>
+              <input id="new-task-branch" type="text" class="form-input modal-field" placeholder="feat/my-feature" />
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button id="new-task-cancel" class="hub-btn" type="button">Cancel</button>

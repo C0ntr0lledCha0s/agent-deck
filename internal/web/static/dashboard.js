@@ -4235,6 +4235,24 @@
     })
   }
 
+  // ── Enhanced new task modal ──────────────────────────────────────
+  var advToggle = document.getElementById("new-task-advanced-toggle")
+  var advSection = document.getElementById("new-task-advanced")
+  if (advToggle && advSection) {
+    advToggle.addEventListener("click", function () {
+      advSection.classList.toggle("form-section-collapsed")
+      advToggle.classList.toggle("form-section-open")
+    })
+  }
+
+  var worktreeCheck = document.getElementById("new-task-worktree")
+  var branchGroup = document.getElementById("new-task-branch-group")
+  if (worktreeCheck && branchGroup) {
+    worktreeCheck.addEventListener("change", function () {
+      branchGroup.style.display = this.checked ? "" : "none"
+    })
+  }
+
   // ── Fork modal listeners ────────────────────────────────────────
   var forkClose = document.getElementById("fork-task-close")
   var forkBackdrop = document.getElementById("fork-task-backdrop")

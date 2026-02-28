@@ -1766,6 +1766,50 @@
   border-bottom-color: var(--accent);
 }
 
+/* ── Collapsible form sections ────────────────────────────────── */
+
+.form-section-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 12px;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.form-section-header.collapsible {
+  cursor: pointer;
+}
+
+.form-section-collapsed {
+  display: none;
+}
+
+.form-section-open + .form-section-collapsed {
+  display: block;
+}
+
+.toggle-caret {
+  float: right;
+  transition: transform 150ms;
+}
+
+.form-section-open .toggle-caret {
+  transform: rotate(180deg);
+}
+
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
 /* ── Fork / Send-To modals ────────────────────────────────────── */
 
 .fork-source-label {
