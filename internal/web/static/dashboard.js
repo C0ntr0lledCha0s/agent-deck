@@ -8,6 +8,7 @@
     selectedTaskId: null,
     activeView: "agents",
     projectFilter: "",
+    searchQuery: "",
     authToken: readAuthTokenFromURL(),
     terminal: null,
     terminalWs: null,
@@ -1463,6 +1464,17 @@
     // Filter tasks
     var visible = state.tasks.filter(function (t) {
       if (state.projectFilter && t.project !== state.projectFilter) return false
+      if (state.searchQuery) {
+        var q = state.searchQuery
+        // Magic prefix shortcuts
+        if (q === "/waiting") return effectiveAgentStatus(t) === "waiting"
+        if (q === "/running") return effectiveAgentStatus(t) === "running"
+        if (q === "/idle") return effectiveAgentStatus(t) === "idle"
+        if (q === "/error") return effectiveAgentStatus(t) === "error"
+        // Fuzzy match on description, project, id
+        var haystack = ((t.description || "") + " " + (t.project || "") + " " + (t.id || "")).toLowerCase()
+        if (haystack.indexOf(q) === -1) return false
+      }
       return true
     })
 
@@ -3697,6 +3709,15 @@
     detailTabs[dt].addEventListener("click", function (e) {
       var tabName = e.currentTarget.dataset.tab
       if (tabName) switchDetailTab(tabName)
+    })
+  }
+
+  // ── Search bar ──────────────────────────────────────────────────
+  var searchInput = document.getElementById("search-input")
+  if (searchInput) {
+    searchInput.addEventListener("input", function () {
+      state.searchQuery = this.value.trim().toLowerCase()
+      renderTaskList()
     })
   }
 
