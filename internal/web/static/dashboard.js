@@ -2314,6 +2314,14 @@
     state.fitAddon = fitAddon
     updateTerminalToolbar()
 
+    // Suppress right-click from reaching tmux so only the browser context menu
+    // appears (tmux's right-click paste/popup is not useful in a browser).
+    // Capture-phase mousedown intercept prevents xterm.js from sending the
+    // right-click mouse event to the PTY (which would trigger tmux paste/popup).
+    container.addEventListener("mousedown", function (e) {
+      if (e.button === 2) e.stopImmediatePropagation()
+    }, true)
+
     // Auto-copy selection to clipboard (Shift+drag bypasses tmux mouse capture).
     term.onSelectionChange(function () {
       var sel = term.getSelection()
