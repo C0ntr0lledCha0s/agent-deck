@@ -576,7 +576,7 @@
     }
     if (attentionCount > 0) {
       var notif = el("button", "notification-badge")
-      notif.textContent = attentionCount + " waiting"
+      notif.textContent = attentionCount + " need attention"
       notif.title = "Click to scroll to needs-attention agents"
       notif.addEventListener("click", scrollToNeedsAttention)
       rightEl.appendChild(notif)
@@ -3556,7 +3556,13 @@
 
     if (!project || !description) return
 
-    var body = JSON.stringify({ project: project, description: description, phase: phase })
+    var payload = { project: project, description: description, phase: phase }
+    var worktreeEl = document.getElementById("new-task-worktree")
+    var branchEl = document.getElementById("new-task-branch")
+    if (worktreeEl && worktreeEl.checked && branchEl && branchEl.value.trim()) {
+      payload.branch = branchEl.value.trim()
+    }
+    var body = JSON.stringify(payload)
     var headers = authHeaders()
     headers["Content-Type"] = "application/json"
 
@@ -3768,7 +3774,7 @@
     var grid = el("div", "analytics-grid")
     grid.appendChild(metricCard("Tool Calls", (data.toolCalls || []).reduce(function (s, t) { return s + t.count }, 0)))
     grid.appendChild(metricCard("Cost", "$" + (data.estimatedCost || 0).toFixed(2)))
-    grid.appendChild(metricCard("Duration", formatDuration(null, data.durationSeconds)))
+    grid.appendChild(metricCard("Duration", formatSeconds(data.durationSeconds)))
     grid.appendChild(metricCard("Turns", data.totalTurns || 0))
     grid.appendChild(metricCard("Cache Read", formatNumber(data.cacheReadTokens || 0)))
     grid.appendChild(metricCard("Cache Write", formatNumber(data.cacheWriteTokens || 0)))
@@ -3803,8 +3809,19 @@
   }
 
   function formatNumber(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + "M"
     if (n >= 1000) return (n / 1000).toFixed(1) + "k"
     return String(n)
+  }
+
+  function formatSeconds(totalSec) {
+    if (!totalSec || totalSec <= 0) return "\u2014"
+    var s = Math.floor(totalSec)
+    if (s < 60) return s + "s"
+    var m = Math.floor(s / 60)
+    if (m < 60) return m + "m " + (s % 60) + "s"
+    var h = Math.floor(m / 60)
+    return h + "h " + (m % 60) + "m"
   }
 
   function switchDetailTab(tabName) {

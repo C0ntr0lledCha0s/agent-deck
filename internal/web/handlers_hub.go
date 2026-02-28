@@ -14,6 +14,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
 	"github.com/asheshgoplani/agent-deck/internal/hub/workspace"
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -1100,7 +1101,8 @@ func (s *Server) handleTaskRestart(w http.ResponseWriter, _ *http.Request, taskI
 
 	// Try to restart via the hub bridge
 	if s.hubBridge != nil {
-		if restartErr := s.hubBridge.RestartTask(task); restartErr == nil {
+		restartErr := s.hubBridge.RestartTask(task)
+		if restartErr == nil {
 			s.notifyTaskChanged()
 			writeJSON(w, http.StatusOK, taskRestartResponse{
 				Status:  "restarted",
@@ -1108,9 +1110,18 @@ func (s *Server) handleTaskRestart(w http.ResponseWriter, _ *http.Request, taskI
 			})
 			return
 		}
+		logging.ForComponent(logging.CompWeb).Warn("restart_failed",
+			slog.String("task", taskID),
+			slog.String("error", restartErr.Error()),
+		)
+		writeJSON(w, http.StatusConflict, taskRestartResponse{
+			Status:  "error",
+			Message: restartErr.Error(),
+		})
+		return
 	}
 
-	// No session to restart
+	// No hub bridge configured
 	writeJSON(w, http.StatusConflict, taskRestartResponse{
 		Status:  "no_session",
 		Message: "no active session to restart",

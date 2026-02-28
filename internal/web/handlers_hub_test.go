@@ -1985,3 +1985,39 @@ func TestTaskRestartNotFound(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, rr.Code)
 }
+
+func TestTaskAnalyticsMethodNotAllowed(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "test-proj",
+		Description: "Method test",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	require.NoError(t, srv.hubTasks.Save(task))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/analytics", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+}
+
+func TestTaskRestartMethodNotAllowed(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "test-proj",
+		Description: "Method test",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	require.NoError(t, srv.hubTasks.Save(task))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/restart", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+}

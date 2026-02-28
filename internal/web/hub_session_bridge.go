@@ -179,7 +179,8 @@ func (b *HubSessionBridge) TransitionPhase(taskID string, nextPhase hub.Phase, s
 }
 
 // RestartTask attempts to restart the most recent session for a task.
-// It looks up the session instance by ClaudeSessionID, kills it, and starts a new phase.
+// It looks up the session instance by ClaudeSessionID and uses the instance's
+// Restart() method which preserves session context and conversation history.
 func (b *HubSessionBridge) RestartTask(task *hub.Task) error {
 	sessionID := getActiveClaudeSessionID(task)
 	if sessionID == "" {
@@ -199,10 +200,10 @@ func (b *HubSessionBridge) RestartTask(task *hub.Task) error {
 
 	for _, inst := range instances {
 		if inst.ID == sessionID {
-			// Kill existing session and start a new one
-			inst.Kill()
-			_, startErr := b.StartPhase(task.ID, task.Phase)
-			return startErr
+			if !inst.CanRestart() {
+				return fmt.Errorf("session cannot be restarted")
+			}
+			return inst.Restart()
 		}
 	}
 
