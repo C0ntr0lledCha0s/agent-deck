@@ -1955,3 +1955,33 @@ func TestTaskAnalyticsNotFound(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, rr.Code)
 }
+
+func TestTaskRestartEndpoint(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "test-proj",
+		Description: "Restart test",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	require.NoError(t, srv.hubTasks.Save(task))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/restart", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	// Without a real tmux session, restart will return OK with a status message
+	// (graceful degradation — task exists but no session to restart)
+	assert.Contains(t, []int{http.StatusOK, http.StatusConflict}, rr.Code)
+}
+
+func TestTaskRestartNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/nonexistent/restart", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+}

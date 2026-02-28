@@ -178,6 +178,37 @@ func (b *HubSessionBridge) TransitionPhase(taskID string, nextPhase hub.Phase, s
 	return b.StartPhase(taskID, nextPhase)
 }
 
+// RestartTask attempts to restart the most recent session for a task.
+// It looks up the session instance by ClaudeSessionID, kills it, and starts a new phase.
+func (b *HubSessionBridge) RestartTask(task *hub.Task) error {
+	sessionID := getActiveClaudeSessionID(task)
+	if sessionID == "" {
+		return fmt.Errorf("no claude session ID found")
+	}
+
+	storage, err := b.openStorage(b.profile)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		return fmt.Errorf("load instances: %w", err)
+	}
+
+	for _, inst := range instances {
+		if inst.ID == sessionID {
+			// Kill existing session and start a new one
+			inst.Kill()
+			_, startErr := b.StartPhase(task.ID, task.Phase)
+			return startErr
+		}
+	}
+
+	return fmt.Errorf("session instance not found for ID %s", sessionID)
+}
+
 func (b *HubSessionBridge) saveInstance(inst *session.Instance) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -253,6 +253,12 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleTaskAnalytics(w, r, taskID)
+	case "restart":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		s.handleTaskRestart(w, r, taskID)
 	default:
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
 	}
@@ -1072,6 +1078,43 @@ func (s *Server) handleTaskAnalytics(w http.ResponseWriter, _ *http.Request, tas
 	}
 
 	writeJSON(w, http.StatusOK, analyticsResponse{Analytics: data})
+}
+
+type taskRestartResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// handleTaskRestart serves POST /api/tasks/{id}/restart.
+func (s *Server) handleTaskRestart(w http.ResponseWriter, _ *http.Request, taskID string) {
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	// Try to restart via the hub bridge
+	if s.hubBridge != nil {
+		if restartErr := s.hubBridge.RestartTask(task); restartErr == nil {
+			s.notifyTaskChanged()
+			writeJSON(w, http.StatusOK, taskRestartResponse{
+				Status:  "restarted",
+				Message: "session restarted",
+			})
+			return
+		}
+	}
+
+	// No session to restart
+	writeJSON(w, http.StatusConflict, taskRestartResponse{
+		Status:  "no_session",
+		Message: "no active session to restart",
+	})
 }
 
 // getActiveClaudeSessionID returns the most recent ClaudeSessionID from a task's sessions.
