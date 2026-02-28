@@ -1935,6 +1935,37 @@
   }
 
   // ── Right panel ───────────────────────────────────────────────────
+  // ── Action bar ──────────────────────────────────────────────────
+  function renderActionBar(task) {
+    var bar = document.getElementById("action-bar")
+    if (!bar) return
+    clearChildren(bar)
+
+    if (!task) return
+
+    var actions = [
+      { icon: "\u21BB", label: "Restart", fn: function () { restartTask(task.id) } },
+      { icon: "\u2442", label: "Fork", fn: function () { openForkModal(task) } },
+      { icon: "\u270E", label: "Rename", fn: function () { startInlineRename(task) } },
+      { icon: "\u2197", label: "Send to", fn: function () { openSendToModal(task) } },
+    ]
+
+    var leftGroup = el("div", "action-bar-left")
+    for (var i = 0; i < actions.length; i++) {
+      var btn = el("button", "action-btn", actions[i].icon + " " + actions[i].label)
+      btn.title = actions[i].label
+      ;(function (fn) {
+        btn.addEventListener("click", fn)
+      })(actions[i].fn)
+      leftGroup.appendChild(btn)
+    }
+    bar.appendChild(leftGroup)
+
+    var deleteBtn = el("button", "action-btn action-btn--danger", "\u2715 Delete")
+    deleteBtn.addEventListener("click", function () { confirmDeleteTask(task.id) })
+    bar.appendChild(deleteBtn)
+  }
+
   function renderRightPanel(task) {
     var emptyState = document.getElementById("empty-state")
     var detailView = document.getElementById("detail-view")
@@ -1952,6 +1983,7 @@
     renderSessionChain(task)
     renderPreviewHeader(task)
     renderClaudeMeta(task)
+    renderActionBar(task)
 
     // If the Messages tab is currently active, reload messages for the new task.
     var activeTab = document.querySelector(".detail-tab--active")

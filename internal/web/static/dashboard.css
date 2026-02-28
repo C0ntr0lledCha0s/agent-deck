@@ -684,6 +684,51 @@
   font-size: 0.92rem;
 }
 
+/* ── Action bar ────────────────────────────────────────────────── */
+
+.action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.action-bar-left {
+  display: flex;
+  gap: 4px;
+}
+
+.action-btn {
+  padding: 4px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 100ms;
+}
+
+.action-btn:hover {
+  background: var(--bg-panel);
+  border-color: var(--accent);
+}
+
+.action-btn--danger {
+  color: var(--red);
+  border-color: transparent;
+  background: transparent;
+}
+
+.action-btn--danger:hover {
+  background: rgba(255,50,50,0.1);
+  border-color: var(--red);
+}
+
 /* ── Detail view (right panel content) ─────────────────────────── */
 
 .detail-view {
