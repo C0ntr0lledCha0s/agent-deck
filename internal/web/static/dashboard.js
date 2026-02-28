@@ -2314,26 +2314,13 @@
     state.fitAddon = fitAddon
     updateTerminalToolbar()
 
-    // Suppress right-click from reaching tmux so only the browser context menu
-    // appears (tmux's right-click paste/popup is not useful in a browser).
-    // Capture-phase mousedown intercept prevents xterm.js from sending the
-    // right-click mouse event to the PTY (which would trigger tmux paste/popup).
-    container.addEventListener("mousedown", function (e) {
-      if (e.button === 2) e.stopImmediatePropagation()
-    }, true)
-
-    // Auto-copy selection to clipboard (Shift+drag bypasses tmux mouse capture).
+    // Auto-copy selection to clipboard. Mouse tracking sequences are stripped
+    // from the PTY stream (see connectWebSocket), so normal click-and-drag
+    // creates xterm.js native selections that trigger this handler.
     term.onSelectionChange(function () {
       var sel = term.getSelection()
       if (sel) {
-        navigator.clipboard.writeText(sel).then(function () {
-          var copyBtn = document.getElementById("term-copy")
-          if (copyBtn) {
-            copyBtn.textContent = "\u2714 Copied"
-            clearTimeout(state._copyFeedbackTimer)
-            state._copyFeedbackTimer = setTimeout(function () { copyBtn.textContent = "\u2398 Copy" }, 1500)
-          }
-        }).catch(function () {})
+        navigator.clipboard.writeText(sel).catch(function () {})
       }
     })
 
@@ -2385,8 +2372,15 @@
     }
     ws.onmessage = function (e) {
       if (e.data instanceof ArrayBuffer) {
-        // Binary frames are PTY output — write to terminal
-        term.write(new Uint8Array(e.data))
+        // Binary frames are PTY output — write to terminal.
+        // Strip mouse tracking escape sequences so xterm.js stays in normal
+        // mode: click-and-drag creates native text selections instead of being
+        // forwarded to tmux. tmux mouse features (pane switching, tmux
+        // scrollback) are not useful in a browser context.
+        var raw = new Uint8Array(e.data)
+        var str = new TextDecoder().decode(raw)
+        var cleaned = str.replace(/\x1b\[\?(?:1000|1002|1003|1005|1006|1015)[hl]/g, "")
+        term.write(cleaned)
       }
       // String frames are JSON control messages (status, error, etc.) — ignore for terminal
     }
@@ -2490,21 +2484,11 @@
   ;(function initTerminalToolbar() {
     var fontDown = document.getElementById("term-font-down")
     var fontUp = document.getElementById("term-font-up")
-    var copyBtn = document.getElementById("term-copy")
     var scrollBtn = document.getElementById("term-scroll-bottom")
     var fullscreenBtn = document.getElementById("term-fullscreen")
 
     if (fontDown) fontDown.addEventListener("click", function () { changeTerminalFontSize(-1) })
     if (fontUp) fontUp.addEventListener("click", function () { changeTerminalFontSize(1) })
-    if (copyBtn) copyBtn.addEventListener("click", function () {
-      if (!state.terminal) return
-      var sel = state.terminal.getSelection()
-      if (sel) {
-        navigator.clipboard.writeText(sel).catch(function () {})
-        copyBtn.textContent = "\u2714 Copied"
-        setTimeout(function () { copyBtn.textContent = "\u2398 Copy" }, 1500)
-      }
-    })
     if (scrollBtn) scrollBtn.addEventListener("click", function () {
       if (state.terminal) state.terminal.scrollToBottom()
     })
