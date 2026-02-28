@@ -13,6 +13,7 @@
     terminalWs: null,
     previewStream: null,
     fitAddon: null,
+    terminalResizeObserver: null,
     chatMode: null,
     chatModeOverride: null,
     sessionMap: {},  // menuSession.id → menuSession (from SSE menu events)
@@ -2238,8 +2239,9 @@
 
     var term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: 14,
       fontFamily: "var(--font-mono)",
+      scrollback: 5000,
       theme: {
         background: "#080a0e",
         foreground: "#c8d0dc",
@@ -2254,12 +2256,35 @@
     state.terminal = term
     state.fitAddon = fitAddon
 
+    // Watch the container for size changes so xterm re-fits automatically.
+    if (state.terminalResizeObserver) {
+      state.terminalResizeObserver.disconnect()
+    }
+    state.terminalResizeObserver = new ResizeObserver(function () {
+      if (state.fitAddon) {
+        state.fitAddon.fit()
+        sendTerminalResize()
+      }
+    })
+    state.terminalResizeObserver.observe(container)
+
     if (isContainerTask) {
       // Container sessions: stream output via SSE preview endpoint
       connectPreviewStream(task, term)
     } else {
       // Local sessions: connect via WebSocket for live PTY
       connectWebSocket(liveSession.id, term)
+    }
+  }
+
+  // Send current terminal dimensions to the server so the PTY matches.
+  function sendTerminalResize() {
+    if (!state.terminal || !state.terminalWs) return
+    if (state.terminalWs.readyState !== WebSocket.OPEN) return
+    var cols = state.terminal.cols
+    var rows = state.terminal.rows
+    if (cols > 0 && rows > 0) {
+      state.terminalWs.send(JSON.stringify({ type: "resize", cols: cols, rows: rows }))
     }
   }
 
@@ -2272,6 +2297,10 @@
     state.terminalWs = ws
 
     ws.binaryType = "arraybuffer"
+    ws.onopen = function () {
+      // Send initial resize so the server PTY matches the browser terminal size.
+      sendTerminalResize()
+    }
     ws.onmessage = function (e) {
       if (e.data instanceof ArrayBuffer) {
         // Binary frames are PTY output — write to terminal
@@ -2306,6 +2335,10 @@
   }
 
   function disconnectTerminal() {
+    if (state.terminalResizeObserver) {
+      state.terminalResizeObserver.disconnect()
+      state.terminalResizeObserver = null
+    }
     if (state.terminalWs) {
       state.terminalWs.close()
       state.terminalWs = null
@@ -2349,7 +2382,10 @@
 
   // ── Resize handler ────────────────────────────────────────────────
   window.addEventListener("resize", function () {
-    if (state.fitAddon) state.fitAddon.fit()
+    if (state.fitAddon) {
+      state.fitAddon.fit()
+      sendTerminalResize()
+    }
   })
 
   // ── Mobile back ───────────────────────────────────────────────────
@@ -3102,9 +3138,12 @@
     if (tabName === "terminal") {
       if (terminalContainer) terminalContainer.style.display = ""
       if (messagesContainer) messagesContainer.style.display = "none"
-      // Re-fit terminal when switching back
+      // Re-fit terminal when switching back and sync size with server
       if (state.fitAddon) {
-        setTimeout(function () { state.fitAddon.fit() }, 50)
+        setTimeout(function () {
+          state.fitAddon.fit()
+          sendTerminalResize()
+        }, 50)
       }
     } else if (tabName === "messages") {
       if (terminalContainer) terminalContainer.style.display = "none"

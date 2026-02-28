@@ -1462,6 +1462,7 @@
   min-height: 0;
   background: var(--term-bg);
   overflow: hidden;
+  padding: 6px 0 6px 12px;
 }
 
 .terminal-container .xterm {
@@ -1469,7 +1470,6 @@
 }
 
 .terminal-container .xterm-screen {
-  width: 100%;
   height: 100%;
 }
 

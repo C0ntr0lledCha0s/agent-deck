@@ -144,8 +144,13 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 		return err
 	}
 
-	// Do not call `tmux resize-window` here: that changes shared tmux window
-	// dimensions and causes web resizing to leak into other attached clients.
+	// Also resize the tmux window so content is rendered at the web client's
+	// width. Without this, tmux renders at its own window size (set by
+	// other clients like the TUI), causing horizontal overflow when
+	// scrolling through the terminal in the browser.
+	cmd := tmuxCommand("resize-window", "-t", b.tmuxSession, "-x", fmt.Sprintf("%d", cols), "-y", fmt.Sprintf("%d", rows))
+	_ = cmd.Run()
+
 	return nil
 }
 
