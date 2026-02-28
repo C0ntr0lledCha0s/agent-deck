@@ -1,6 +1,9 @@
 package web
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // contentBlock represents a single content block from a Claude Code message.
 type contentBlock struct {
@@ -83,4 +86,74 @@ func parseContentBlocks(msg json.RawMessage) []contentBlock {
 	}
 
 	return blocks
+}
+
+// dagMessage is a parsed message with its content blocks extracted.
+type dagMessage struct {
+	Role   string
+	Blocks []contentBlock
+	Time   time.Time
+}
+
+// renderedTurn represents a grouped conversation turn for template rendering.
+type renderedTurn struct {
+	Role   string
+	Blocks []contentBlock
+	Time   time.Time
+}
+
+// groupIntoTurns groups messages into conversation turns following
+// YepAnywhere's pattern: user messages with text content are standalone turns;
+// everything between user text prompts (assistant messages, tool results)
+// forms a single assistant turn.
+func groupIntoTurns(msgs []dagMessage) []renderedTurn {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	var turns []renderedTurn
+	var currentAssistant *renderedTurn
+
+	flushAssistant := func() {
+		if currentAssistant != nil && len(currentAssistant.Blocks) > 0 {
+			turns = append(turns, *currentAssistant)
+			currentAssistant = nil
+		}
+	}
+
+	for _, msg := range msgs {
+		isUserPrompt := msg.Role == "user" && hasTextContent(msg.Blocks)
+
+		if isUserPrompt {
+			flushAssistant()
+			turns = append(turns, renderedTurn{
+				Role:   "user",
+				Blocks: msg.Blocks,
+				Time:   msg.Time,
+			})
+		} else {
+			// Accumulate into assistant turn (includes tool_result messages
+			// which have role=user but only contain tool_result blocks).
+			if currentAssistant == nil {
+				currentAssistant = &renderedTurn{
+					Role: "assistant",
+					Time: msg.Time,
+				}
+			}
+			currentAssistant.Blocks = append(currentAssistant.Blocks, msg.Blocks...)
+		}
+	}
+
+	flushAssistant()
+	return turns
+}
+
+// hasTextContent returns true if any block is a text block with non-empty text.
+func hasTextContent(blocks []contentBlock) bool {
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			return true
+		}
+	}
+	return false
 }

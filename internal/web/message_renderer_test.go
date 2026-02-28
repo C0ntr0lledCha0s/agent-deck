@@ -58,3 +58,51 @@ func TestParseContentBlocks_EmptyMessage(t *testing.T) {
 	blocks := parseContentBlocks(msg)
 	assert.Empty(t, blocks)
 }
+
+func TestGroupIntoTurns_Basic(t *testing.T) {
+	msgs := []dagMessage{
+		{Role: "user", Blocks: []contentBlock{{Type: "text", Text: "hello"}}},
+		{Role: "assistant", Blocks: []contentBlock{{Type: "thinking", Text: "hmm"}, {Type: "text", Text: "hi"}}},
+	}
+	turns := groupIntoTurns(msgs)
+	require.Len(t, turns, 2)
+	assert.Equal(t, "user", turns[0].Role)
+	assert.Len(t, turns[0].Blocks, 1)
+	assert.Equal(t, "assistant", turns[1].Role)
+	assert.Len(t, turns[1].Blocks, 2)
+}
+
+func TestGroupIntoTurns_ConsecutiveAssistant(t *testing.T) {
+	msgs := []dagMessage{
+		{Role: "user", Blocks: []contentBlock{{Type: "text", Text: "do it"}}},
+		{Role: "assistant", Blocks: []contentBlock{{Type: "tool_use", ToolName: "Bash"}}},
+		{Role: "user", Blocks: []contentBlock{{Type: "tool_result", Text: "output"}}},
+		{Role: "assistant", Blocks: []contentBlock{{Type: "text", Text: "done"}}},
+	}
+	turns := groupIntoTurns(msgs)
+	require.Len(t, turns, 2)
+	assert.Equal(t, "user", turns[0].Role)
+	// All assistant + tool_result messages between user prompts = one assistant turn
+	assert.Equal(t, "assistant", turns[1].Role)
+	assert.Len(t, turns[1].Blocks, 3) // tool_use + tool_result + text
+}
+
+func TestGroupIntoTurns_MultipleUserPrompts(t *testing.T) {
+	msgs := []dagMessage{
+		{Role: "user", Blocks: []contentBlock{{Type: "text", Text: "first"}}},
+		{Role: "assistant", Blocks: []contentBlock{{Type: "text", Text: "reply1"}}},
+		{Role: "user", Blocks: []contentBlock{{Type: "text", Text: "second"}}},
+		{Role: "assistant", Blocks: []contentBlock{{Type: "text", Text: "reply2"}}},
+	}
+	turns := groupIntoTurns(msgs)
+	require.Len(t, turns, 4)
+	assert.Equal(t, "user", turns[0].Role)
+	assert.Equal(t, "assistant", turns[1].Role)
+	assert.Equal(t, "user", turns[2].Role)
+	assert.Equal(t, "assistant", turns[3].Role)
+}
+
+func TestGroupIntoTurns_Empty(t *testing.T) {
+	turns := groupIntoTurns(nil)
+	assert.Empty(t, turns)
+}
