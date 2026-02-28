@@ -2314,9 +2314,14 @@
     state.fitAddon = fitAddon
     updateTerminalToolbar()
 
-    // Auto-copy selection to clipboard. Mouse tracking sequences are stripped
-    // from the PTY stream (see connectWebSocket), so normal click-and-drag
-    // creates xterm.js native selections that trigger this handler.
+    // Suppress right-click from reaching tmux so only the browser context menu
+    // appears. Capture-phase intercept runs before xterm.js can forward it.
+    container.addEventListener("mousedown", function (e) {
+      if (e.button === 2) e.stopImmediatePropagation()
+    }, true)
+
+    // Auto-copy selection to clipboard. Shift+drag bypasses tmux mouse capture
+    // to create native xterm.js selections that trigger this handler.
     term.onSelectionChange(function () {
       var sel = term.getSelection()
       if (sel) {
@@ -2372,15 +2377,10 @@
     }
     ws.onmessage = function (e) {
       if (e.data instanceof ArrayBuffer) {
-        // Binary frames are PTY output — write to terminal.
-        // Strip mouse tracking escape sequences so xterm.js stays in normal
-        // mode: click-and-drag creates native text selections instead of being
-        // forwarded to tmux. tmux mouse features (pane switching, tmux
-        // scrollback) are not useful in a browser context.
-        var raw = new Uint8Array(e.data)
-        var str = new TextDecoder().decode(raw)
-        var cleaned = str.replace(/\x1b\[\?(?:1000|1002|1003|1005|1006|1015)[hl]/g, "")
-        term.write(cleaned)
+        // Binary frames are PTY output — write directly to terminal.
+        // Mouse tracking stays enabled so scroll wheel goes to tmux (full
+        // session history). Use Shift+drag for native text selection.
+        term.write(new Uint8Array(e.data))
       }
       // String frames are JSON control messages (status, error, etc.) — ignore for terminal
     }
