@@ -2314,6 +2314,21 @@
     state.fitAddon = fitAddon
     updateTerminalToolbar()
 
+    // Auto-copy selection to clipboard (Shift+drag bypasses tmux mouse capture).
+    term.onSelectionChange(function () {
+      var sel = term.getSelection()
+      if (sel) {
+        navigator.clipboard.writeText(sel).then(function () {
+          var copyBtn = document.getElementById("term-copy")
+          if (copyBtn) {
+            copyBtn.textContent = "\u2714 Copied"
+            clearTimeout(state._copyFeedbackTimer)
+            state._copyFeedbackTimer = setTimeout(function () { copyBtn.textContent = "\u2398 Copy" }, 1500)
+          }
+        }).catch(function () {})
+      }
+    })
+
     // Watch the container for size changes so xterm re-fits automatically.
     if (state.terminalResizeObserver) {
       state.terminalResizeObserver.disconnect()

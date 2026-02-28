@@ -1482,6 +1482,14 @@
   user-select: none;
 }
 
+.terminal-toolbar-hint {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--text-dim);
+  opacity: 0.6;
+  user-select: none;
+}
+
 .terminal-toolbar-btn {
   font-family: var(--font-mono);
   font-size: 0.6rem;
