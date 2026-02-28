@@ -464,7 +464,8 @@ func TestMessagesE2E_HTMLRendering(t *testing.T) {
 	assert.Contains(t, body, "thinking-block")
 	assert.Contains(t, body, "I need to write tests")
 	assert.Contains(t, body, "Here are the tests")
-	assert.Contains(t, body, "tool-block")
+	assert.Contains(t, body, "tool-indicator")
+	assert.Contains(t, body, "tool-indicator-header")
 	assert.Contains(t, body, "go test ./...")
 
 	// Tool result paired with tool use

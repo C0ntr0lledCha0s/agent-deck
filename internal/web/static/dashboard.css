@@ -1608,7 +1608,7 @@
   background: var(--bg);
 }
 
-/* ── User prompt bubble (YepAnywhere-aligned) ─────────────────── */
+/* ── User prompt pill (YepAnywhere-aligned) ───────────────────── */
 
 .user-prompt-container {
   margin-bottom: 16px;
@@ -1616,10 +1616,10 @@
 
 .message-user-prompt {
   background: var(--bg-user-message);
-  border-radius: 6px;
+  border-radius: 18px;
   width: fit-content;
-  max-width: 80%;
-  padding: 0.25rem 0.5rem;
+  max-width: 75%;
+  padding: 8px 16px;
   font-size: 0.88rem;
   line-height: 1.5;
   color: var(--text);
@@ -1635,7 +1635,6 @@
 
 .assistant-turn {
   position: relative;
-  padding-left: 24px;
   margin-bottom: 16px;
 }
 
@@ -1645,9 +1644,114 @@
   font-size: 0.88rem;
   color: var(--text);
   line-height: 1.5;
-  white-space: pre-wrap;
   word-break: break-word;
   margin-bottom: 4px;
+}
+
+/* ── Markdown content ─────────────────────────────────────────── */
+
+.md-content {
+  white-space: normal;
+}
+
+.md-content p {
+  margin: 0 0 8px;
+}
+
+.md-content p:last-child {
+  margin-bottom: 0;
+}
+
+.md-content strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.md-content em {
+  font-style: italic;
+}
+
+.md-content code {
+  background: var(--inline-code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.md-content pre {
+  background: var(--code-bg);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.md-content pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+.md-content ul,
+.md-content ol {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+
+.md-content li {
+  margin-bottom: 2px;
+}
+
+.md-content h1,
+.md-content h2,
+.md-content h3,
+.md-content h4,
+.md-content h5,
+.md-content h6 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.md-content h1 { font-size: 1.2rem; }
+.md-content h2 { font-size: 1.1rem; }
+.md-content h3 { font-size: 1.0rem; }
+
+.md-content blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--border-light);
+  color: var(--muted);
+}
+
+.md-content table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 0.82rem;
+}
+
+.md-content th,
+.md-content td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+}
+
+.md-content th {
+  background: var(--bg-panel);
+  font-weight: 600;
+}
+
+.md-content a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.md-content a:hover {
+  text-decoration: underline;
 }
 
 /* ── Collapsible text ─────────────────────────────────────────── */
@@ -1726,7 +1830,7 @@ details[open] > .collapsible__summary .collapsible__icon {
   padding: 4px 0 4px 16px;
   border-left: 2px solid var(--thinking-color);
   margin: 4px 0;
-  opacity: 0.85;
+  opacity: 0.75;
 }
 
 /* ── Messages empty state ─────────────────────────────────────── */
@@ -1740,104 +1844,77 @@ details[open] > .collapsible__summary .collapsible__icon {
   font-size: 0.88rem;
 }
 
-/* ── Tool blocks ──────────────────────────────────────────────── */
+/* ── Tool indicators (compact, YepAnywhere-aligned) ───────────── */
 
-.tool-block {
-  margin-top: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
+.tool-indicator {
+  margin: 4px 0;
 }
 
-.tool-header {
+.tool-indicator-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--bg-panel);
+  gap: 6px;
+  padding: 3px 0;
   font-size: 0.82rem;
+  cursor: pointer;
   user-select: none;
 }
 
-.tool-icon {
+.tool-dot {
+  color: var(--green);
+  font-size: 0.6rem;
   flex-shrink: 0;
-  width: 20px;
-  text-align: center;
-  font-weight: 600;
-  color: var(--accent);
 }
 
-.tool-command {
+.tool-name {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.tool-summary {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 0.8rem;
-  color: var(--text);
-}
-
-.tool-filename {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  color: var(--text);
-}
-
-.tool-badge {
-  flex-shrink: 0;
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
+  font-size: 0.78rem;
   color: var(--muted);
 }
 
-.tool-badge--error {
-  color: var(--red);
-  border-color: rgba(239, 68, 68, 0.4);
-  background: rgba(239, 68, 68, 0.1);
+.tool-expand-arrow {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+  transition: transform 150ms ease;
 }
 
-.tool-badge--add {
-  color: var(--green);
-  border-color: rgba(34, 197, 94, 0.4);
-  background: rgba(34, 197, 94, 0.1);
+.tool-indicator-header[aria-expanded="true"] .tool-expand-arrow {
+  transform: rotate(90deg);
 }
 
-.tool-badge--del {
-  color: var(--red);
-  border-color: rgba(239, 68, 68, 0.4);
-  background: rgba(239, 68, 68, 0.1);
+.tool-indicator-body {
+  padding: 4px 0 4px 14px;
 }
 
-.tool-body {
+.tool-output {
+  margin: 0;
+  background: var(--code-bg);
+  border-radius: 6px;
   padding: 8px 10px;
-  background: var(--bg);
   font-family: var(--font-mono);
   font-size: 0.78rem;
   line-height: 1.5;
-  overflow-x: auto;
-}
-
-.tool-body pre {
-  margin: 0;
+  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 .tool-collapsed {
   display: none;
-}
-
-.tool-stderr {
-  color: var(--red);
 }
 
 /* ── Diff highlighting ────────────────────────────────────────── */

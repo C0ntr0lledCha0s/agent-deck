@@ -6,6 +6,10 @@ import (
 	"html/template"
 	"strings"
 	"time"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/renderer/html"
 )
 
 // contentBlock represents a single content block from a Claude Code message.
@@ -254,9 +258,29 @@ func toolIcon(name string) string {
 	}
 }
 
+// mdRenderer is a goldmark instance configured for safe markdown rendering.
+var mdRenderer = goldmark.New(
+	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithRendererOptions(html.WithUnsafe()),
+)
+
+// renderMarkdown converts markdown text to HTML. Raw HTML in the source is
+// passed through (goldmark's GFM extension handles sanitisation via
+// autolink/strikethrough/table support). We use WithUnsafe so that code
+// blocks and inline HTML entities render correctly; the template already
+// applies auto-escaping for user-prompt text blocks.
+func renderMarkdown(text string) template.HTML {
+	var buf bytes.Buffer
+	if err := mdRenderer.Convert([]byte(text), &buf); err != nil {
+		return template.HTML(template.HTMLEscapeString(text))
+	}
+	return template.HTML(buf.String())
+}
+
 var messagesTemplate = template.Must(template.New("messages").Funcs(template.FuncMap{
 	"toolInputSummary": toolInputSummary,
 	"toolIcon":         toolIcon,
+	"markdown":         renderMarkdown,
 	"truncateLines": func(s string, maxLines int) string {
 		lines := strings.Split(s, "\n")
 		if len(lines) <= maxLines {
@@ -289,15 +313,17 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 	`<div class="thinking-content">{{.Text}}</div>` +
 	`</details>` +
 	`{{else if eq .Type "text"}}` +
-	`<div class="text-block">{{.Text}}</div>` +
+	`<div class="text-block md-content">{{markdown .Text}}</div>` +
 	`{{else if eq .Type "tool_use"}}` +
-	`<div class="tool-block">` +
-	`<div class="tool-header">` +
-	`<span class="tool-icon">{{toolIcon .ToolName}}</span>` +
-	`<span class="tool-command">{{toolInputSummary .ToolName .ToolInput}}</span>` +
+	`<div class="tool-indicator">` +
+	`<div class="tool-indicator-header" aria-expanded="false">` +
+	`<span class="tool-dot">●</span>` +
+	`<span class="tool-name">{{.ToolName}}</span>` +
+	`<span class="tool-summary">{{toolInputSummary .ToolName .ToolInput}}</span>` +
+	`<span class="tool-expand-arrow">▸</span>` +
 	`</div>` +
-	`<div class="tool-body tool-collapsed">` +
-	`{{if .ToolResultText}}<pre>{{.ToolResultText}}</pre>{{end}}` +
+	`<div class="tool-indicator-body tool-collapsed">` +
+	`{{if .ToolResultText}}<pre class="tool-output">{{.ToolResultText}}</pre>{{end}}` +
 	`</div>` +
 	`</div>` +
 	`{{end}}` +

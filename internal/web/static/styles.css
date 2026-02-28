@@ -19,6 +19,8 @@
   --term-text: #c8d0dc;
   --bg-user-message: #484848;
   --thinking-color: #d97706;
+  --code-bg: #1a1e2a;
+  --inline-code-bg: rgba(255, 255, 255, 0.08);
   --font-mono: 'JetBrains Mono', 'Fira Code', 'IBM Plex Mono', monospace;
   --font-sans: 'IBM Plex Sans', -apple-system, sans-serif;
   --topbar-height: 48px;
