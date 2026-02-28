@@ -86,6 +86,19 @@
     }
   }
 
+  // Return the effective agent status for a task. If a live session exists
+  // in the sessionMap, use its real-time status. Otherwise fall back to the
+  // task's persisted agentStatus — but treat transient states ("thinking",
+  // "running") as "idle" when no live session backs them, since the agent
+  // is no longer active.
+  function effectiveAgentStatus(task) {
+    var live = getActiveSessionForTask(task)
+    if (live) return mapSessionStatus(live.status)
+    var s = task.agentStatus || ""
+    if (s === "thinking" || s === "running") return "idle"
+    return s || "idle"
+  }
+
   // ── Auth ──────────────────────────────────────────────────────────
   function readAuthTokenFromURL() {
     var params = new URLSearchParams(window.location.search || "")
@@ -176,6 +189,13 @@
           }
         }
         state.sessionMap = map
+        // Re-render so agent status badges reflect live session data
+        // (resolves race where tasks render before sessionMap is populated).
+        renderTaskList()
+        if (state.selectedTaskId) {
+          var task = findTask(state.selectedTaskId)
+          if (task) renderRightPanel(task)
+        }
       })
       .catch(function (err) {
         console.error("fetchMenuData:", err)
@@ -190,7 +210,7 @@
   }
 
   function getCardBorderColor(task) {
-    if (task.agentStatus === "waiting") return "var(--orange)"
+    if (effectiveAgentStatus(task) === "waiting") return "var(--orange)"
     return TASK_STATUS_COLORS[task.status] || "var(--text-dim)"
   }
 
@@ -960,8 +980,9 @@
     var footer = el("div", "kanban-card-footer")
     footer.appendChild(el("span", "kanban-card-id", task.id || ""))
 
-    if (task.agentStatus) {
-      var meta = AGENT_STATUS_META[task.agentStatus]
+    var kanbanStatus = effectiveAgentStatus(task)
+    if (kanbanStatus) {
+      var meta = AGENT_STATUS_META[kanbanStatus]
       if (meta) {
         var statusEl = el("span", "kanban-card-status")
         statusEl.style.color = meta.color
@@ -1404,7 +1425,7 @@
   function assignTaskTier(task) {
     // Prefer server-provided tier if present
     if (task.tier) return
-    var s = task.agentStatus || ""
+    var s = effectiveAgentStatus(task)
     if (s === "waiting" || s === "error") {
       task.tier = "needsAttention"
       task.tierBadge = s === "waiting" ? "approval" : "error"
@@ -1551,15 +1572,11 @@
     top.appendChild(el("span", "agent-card-project", task.project || "\u2014"))
     var topRight = el("div", "agent-card-footer")
     topRight.style.gap = "6px"
-    if (task.agentStatus === "waiting" && task.askQuestion) {
+    var cardStatus = effectiveAgentStatus(task)
+    if (cardStatus === "waiting" && task.askQuestion) {
       topRight.appendChild(el("span", "ask-badge", "\u25D0 INPUT"))
     }
-    var liveSession = getActiveSessionForTask(task)
-    if (liveSession) {
-      topRight.appendChild(createAgentStatusBadge(mapSessionStatus(liveSession.status)))
-    } else {
-      topRight.appendChild(createAgentStatusBadge(task.agentStatus))
-    }
+    topRight.appendChild(createAgentStatusBadge(cardStatus))
     top.appendChild(topRight)
     card.appendChild(top)
 
@@ -1724,12 +1741,7 @@
     top.appendChild(el("span", "detail-title", task.description || "\u2014"))
 
     var actions = el("div", "detail-actions")
-    var detailLive = getActiveSessionForTask(task)
-    if (detailLive) {
-      actions.appendChild(createAgentStatusBadge(mapSessionStatus(detailLive.status)))
-    } else {
-      actions.appendChild(createAgentStatusBadge(task.agentStatus))
-    }
+    actions.appendChild(createAgentStatusBadge(effectiveAgentStatus(task)))
     top.appendChild(actions)
 
     header.appendChild(top)
@@ -1870,8 +1882,7 @@
     leftGroup.style.alignItems = "center"
     leftGroup.appendChild(el("span", "preview-header-project", task.project || "\u2014"))
 
-    var previewLive = getActiveSessionForTask(task)
-    var effectiveStatus = previewLive ? mapSessionStatus(previewLive.status) : task.agentStatus
+    var effectiveStatus = effectiveAgentStatus(task)
     var agentMeta = AGENT_STATUS_META[effectiveStatus] || AGENT_STATUS_META.idle
     var statusSpan = el("span", "preview-header-agent-status")
     statusSpan.textContent = agentMeta.icon + " " + agentMeta.label
@@ -1883,7 +1894,7 @@
     row.appendChild(leftGroup)
 
     // NEEDS INPUT badge
-    if (task.agentStatus === "waiting" && task.askQuestion) {
+    if (effectiveStatus === "waiting" && task.askQuestion) {
       var needsInput = el("span", "preview-header-needs-input", "NEEDS INPUT")
       needsInput.style.background = "rgba(245, 158, 11, 0.12)"
       needsInput.style.border = "1px solid rgba(245, 158, 11, 0.25)"
@@ -2450,7 +2461,8 @@
 
     var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
 
-    if (state.activeView === "agents" && task && task.agentStatus !== "complete" && task.agentStatus !== "idle") {
+    var taskStatus = task ? effectiveAgentStatus(task) : "idle"
+    if (state.activeView === "agents" && task && taskStatus !== "complete" && taskStatus !== "idle") {
       return {
         mode: "reply",
         label: task.id + "/" + task.phase,
@@ -2550,7 +2562,7 @@
     if (existing) existing.remove()
 
     var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
-    if (!task || task.agentStatus !== "waiting" || !task.askQuestion) return
+    if (!task || effectiveAgentStatus(task) !== "waiting" || !task.askQuestion) return
 
     var banner = el("div", "ask-banner")
     var icon = el("span", "ask-banner-icon", "\u25D0")
