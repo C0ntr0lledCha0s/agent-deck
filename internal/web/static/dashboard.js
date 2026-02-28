@@ -568,6 +568,20 @@
       rightEl.appendChild(ideBtn)
     }
 
+    // Notification badge: count of needs-attention agents
+    var attentionCount = 0
+    for (var ai = 0; ai < state.tasks.length; ai++) {
+      var as = effectiveAgentStatus(state.tasks[ai])
+      if (as === "waiting" || as === "error") attentionCount++
+    }
+    if (attentionCount > 0) {
+      var notif = el("button", "notification-badge")
+      notif.textContent = attentionCount + " waiting"
+      notif.title = "Click to scroll to needs-attention agents"
+      notif.addEventListener("click", scrollToNeedsAttention)
+      rightEl.appendChild(notif)
+    }
+
     // Agent count indicator
     var activeCount = 0
     for (var i = 0; i < state.tasks.length; i++) {
@@ -581,6 +595,11 @@
     countSpan.appendChild(dot)
     countSpan.appendChild(document.createTextNode(" " + activeCount))
     rightEl.appendChild(countSpan)
+  }
+
+  function scrollToNeedsAttention() {
+    var section = document.querySelector('.tier-section[data-tier="needsAttention"]')
+    if (section) section.scrollIntoView({ behavior: "smooth", block: "start" })
   }
 
   // ── View switching ─────────────────────────────────────────────────

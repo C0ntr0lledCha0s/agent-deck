@@ -2745,6 +2745,34 @@
   color: var(--accent);
 }
 
+/* ── Notification badge ────────────────────────────────────────── */
+
+.notification-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--orange);
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  font-weight: 600;
+  cursor: pointer;
+  animation: pulse-badge 2s ease-in-out infinite;
+  transition: background 100ms;
+}
+
+.notification-badge:hover {
+  background: rgba(245, 158, 11, 0.2);
+}
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 /* ── Responsive ────────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
