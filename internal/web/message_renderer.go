@@ -1,7 +1,10 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
+	"html/template"
+	"strings"
 	"time"
 )
 
@@ -183,4 +186,122 @@ func pairToolResults(blocks []contentBlock) []contentBlock {
 		out = append(out, b)
 	}
 	return out
+}
+
+// toolInputSummary extracts a short summary from tool input JSON for display
+// in the tool header.
+func toolInputSummary(name string, input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(input, &m); err != nil {
+		return ""
+	}
+	switch name {
+	case "Bash":
+		if cmd, ok := m["command"].(string); ok {
+			return cmd
+		}
+	case "Read", "Write", "Edit":
+		if fp, ok := m["file_path"].(string); ok {
+			return fp
+		}
+	case "Glob":
+		if p, ok := m["pattern"].(string); ok {
+			return p
+		}
+	case "Grep":
+		if p, ok := m["pattern"].(string); ok {
+			return p
+		}
+	}
+	return ""
+}
+
+// toolIcon returns the display icon for a tool name.
+func toolIcon(name string) string {
+	switch name {
+	case "Bash":
+		return "$"
+	case "Read":
+		return "\U0001F4C4" // file emoji
+	case "Write":
+		return "\u270D" // writing hand
+	case "Edit":
+		return "\u270E" // pencil
+	case "Glob":
+		return "\U0001F50D" // magnifying glass
+	case "Grep":
+		return "\U0001F50E" // magnifying glass right
+	default:
+		return "\u2699" // gear
+	}
+}
+
+var messagesTemplate = template.Must(template.New("messages").Funcs(template.FuncMap{
+	"toolInputSummary": toolInputSummary,
+	"toolIcon":         toolIcon,
+	"truncateLines": func(s string, maxLines int) string {
+		lines := strings.Split(s, "\n")
+		if len(lines) <= maxLines {
+			return s
+		}
+		return strings.Join(lines[:maxLines], "\n")
+	},
+	"lineCount": func(s string) int {
+		if s == "" {
+			return 0
+		}
+		return len(strings.Split(s, "\n"))
+	},
+	"needsTruncation": func(s string) bool {
+		lines := strings.Split(s, "\n")
+		return len(lines) > 12 || len(s) > 1200
+	},
+}).Parse(`{{if not .}}<div class="messages-empty">No messages yet.</div>
+{{else}}{{range .}}{{if eq .Role "user"}}` +
+	`<div class="user-prompt-container">` +
+	`<div class="message message-user-prompt">` +
+	`<div class="message-content">` +
+	`{{range .Blocks}}{{if eq .Type "text"}}` +
+	`{{if needsTruncation .Text}}<div class="text-block collapsible-text"><div class="truncated-content">{{truncateLines .Text 12}}<div class="fade-overlay"></div></div><button class="show-more-btn" type="button">Show more</button></div>` +
+	`{{else}}<div class="text-block">{{.Text}}</div>{{end}}` +
+	`{{end}}{{end}}` +
+	`</div></div></div>` +
+
+	`{{else}}` +
+
+	`<div class="assistant-turn">` +
+	`{{range .Blocks}}` +
+	`{{if eq .Type "thinking"}}` +
+	`<details class="thinking-block collapsible">` +
+	`<summary class="collapsible__summary"><span class="collapsible__icon">&#x25B8;</span> Thinking</summary>` +
+	`<div class="thinking-content">{{.Text}}</div>` +
+	`</details>` +
+	`{{else if eq .Type "text"}}` +
+	`<div class="text-block">{{.Text}}</div>` +
+	`{{else if eq .Type "tool_use"}}` +
+	`<div class="tool-block">` +
+	`<div class="tool-header">` +
+	`<span class="tool-icon">{{toolIcon .ToolName}}</span>` +
+	`<span class="tool-command">{{toolInputSummary .ToolName .ToolInput}}</span>` +
+	`</div>` +
+	`<div class="tool-body tool-collapsed">` +
+	`{{if .ToolResultText}}<pre>{{.ToolResultText}}</pre>{{end}}` +
+	`</div>` +
+	`</div>` +
+	`{{end}}` +
+	`{{end}}` +
+	`</div>` +
+
+	`{{end}}{{end}}{{end}}`))
+
+// renderMessagesHTML renders conversation turns as an HTML fragment.
+func renderMessagesHTML(turns []renderedTurn) (string, error) {
+	var buf bytes.Buffer
+	if err := messagesTemplate.Execute(&buf, turns); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }

@@ -134,3 +134,69 @@ func TestPairToolResults_UnpairedToolUse(t *testing.T) {
 	assert.Equal(t, "tool_use", paired[1].Type)
 	assert.Empty(t, paired[1].ToolResultText)
 }
+
+func TestRenderMessagesHTML_UserBubble(t *testing.T) {
+	turns := []renderedTurn{
+		{Role: "user", Blocks: []contentBlock{{Type: "text", Text: "hello world"}}},
+	}
+	html, err := renderMessagesHTML(turns)
+	require.NoError(t, err)
+	assert.Contains(t, html, `class="user-prompt-container"`)
+	assert.Contains(t, html, `class="message message-user-prompt"`)
+	assert.Contains(t, html, "hello world")
+}
+
+func TestRenderMessagesHTML_AssistantTurn(t *testing.T) {
+	turns := []renderedTurn{
+		{Role: "assistant", Blocks: []contentBlock{{Type: "text", Text: "hi there"}}},
+	}
+	html, err := renderMessagesHTML(turns)
+	require.NoError(t, err)
+	assert.Contains(t, html, `class="assistant-turn"`)
+	assert.Contains(t, html, "hi there")
+	assert.NotContains(t, html, "message-user-prompt")
+}
+
+func TestRenderMessagesHTML_ThinkingBlock(t *testing.T) {
+	turns := []renderedTurn{
+		{Role: "assistant", Blocks: []contentBlock{
+			{Type: "thinking", Text: "let me think about this"},
+			{Type: "text", Text: "the answer"},
+		}},
+	}
+	html, err := renderMessagesHTML(turns)
+	require.NoError(t, err)
+	assert.Contains(t, html, `class="thinking-block collapsible"`)
+	assert.Contains(t, html, "let me think about this")
+	assert.Contains(t, html, "the answer")
+}
+
+func TestRenderMessagesHTML_ToolBlock(t *testing.T) {
+	turns := []renderedTurn{
+		{Role: "assistant", Blocks: []contentBlock{
+			{Type: "tool_use", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls -la"}`), ToolResultText: "file1.go"},
+		}},
+	}
+	html, err := renderMessagesHTML(turns)
+	require.NoError(t, err)
+	assert.Contains(t, html, `class="tool-block"`)
+	assert.Contains(t, html, `class="tool-header"`)
+	assert.Contains(t, html, "ls -la")
+	assert.Contains(t, html, "file1.go")
+}
+
+func TestRenderMessagesHTML_EscapesHTML(t *testing.T) {
+	turns := []renderedTurn{
+		{Role: "user", Blocks: []contentBlock{{Type: "text", Text: "<script>alert('xss')</script>"}}},
+	}
+	html, err := renderMessagesHTML(turns)
+	require.NoError(t, err)
+	assert.NotContains(t, html, "<script>")
+	assert.Contains(t, html, "&lt;script&gt;")
+}
+
+func TestRenderMessagesHTML_Empty(t *testing.T) {
+	html, err := renderMessagesHTML(nil)
+	require.NoError(t, err)
+	assert.Contains(t, html, "No messages yet")
+}
