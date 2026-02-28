@@ -4298,6 +4298,26 @@
     })
   }
 
+  // ── Help modal listeners ───────────────────────────────────────
+  var helpBtn = document.getElementById("help-btn")
+  var helpModal = document.getElementById("help-modal")
+  var helpBackdrop = document.getElementById("help-backdrop")
+  var helpClose = document.getElementById("help-close")
+  if (helpBtn && helpModal && helpBackdrop) {
+    helpBtn.addEventListener("click", function () {
+      helpModal.classList.add("open")
+      helpBackdrop.classList.add("open")
+    })
+    if (helpClose) helpClose.addEventListener("click", function () {
+      helpModal.classList.remove("open")
+      helpBackdrop.classList.remove("open")
+    })
+    helpBackdrop.addEventListener("click", function () {
+      helpModal.classList.remove("open")
+      helpBackdrop.classList.remove("open")
+    })
+  }
+
   // ── Init ──────────────────────────────────────────────────────────
   renderSidebar()
   renderTopBar()

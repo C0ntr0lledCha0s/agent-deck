@@ -46,6 +46,7 @@
           </button>
         </div>
         <div class="sidebar-bottom">
+          <button class="sidebar-help-btn" id="help-btn" title="Help" aria-label="Help">?</button>
           <div class="sidebar-status-line" id="sidebar-status" title="Connection status">
             <span class="sidebar-status-dot" id="sidebar-status-dot"></span>
             <span class="sidebar-status-label" id="sidebar-status-label">nuc</span>
@@ -306,6 +307,39 @@
           <span id="send-to-status" class="modal-status"></span>
           <button id="send-to-cancel" class="hub-btn" type="button">Cancel</button>
           <button id="send-to-submit" class="hub-btn-primary" type="button" disabled>Send</button>
+        </div>
+      </div>
+
+      <!-- Help modal -->
+      <div id="help-backdrop" class="modal-backdrop" aria-hidden="true"></div>
+      <div id="help-modal" class="modal modal--wide" role="dialog" aria-label="Help" aria-hidden="true">
+        <div class="modal-header">
+          <span class="modal-title">Agent Deck Help</span>
+          <button id="help-close" class="modal-close" type="button" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body help-body">
+          <h3>Task Management</h3>
+          <dl class="help-list">
+            <dt>Create task</dt><dd>Type in chat bar or click task card &rarr; context menu</dd>
+            <dt>Fork task</dt><dd>Context menu &rarr; Fork, or Action bar &rarr; Fork</dd>
+            <dt>Restart</dt><dd>Context menu or Action bar &rarr; Restart</dd>
+            <dt>Rename</dt><dd>Context menu or Action bar &rarr; Rename</dd>
+            <dt>Delete</dt><dd>Context menu or Action bar &rarr; Delete</dd>
+            <dt>Send output</dt><dd>Context menu or Action bar &rarr; Send to...</dd>
+          </dl>
+          <h3>Filtering</h3>
+          <dl class="help-list">
+            <dt>By project</dt><dd>Click project pills in filter bar</dd>
+            <dt>By status</dt><dd>Click status pills (Running, Waiting, Idle, Error)</dd>
+            <dt>Search</dt><dd>Type in search bar. Use /waiting, /running, /idle, /error</dd>
+            <dt>View mode</dt><dd>Use dropdown to group by Tier, Project, or Status</dd>
+          </dl>
+          <h3>Detail View</h3>
+          <dl class="help-list">
+            <dt>Terminal</dt><dd>Live session output with font size controls</dd>
+            <dt>Messages</dt><dd>Conversation history</dd>
+            <dt>Analytics</dt><dd>Token usage, cost, tool breakdown</dd>
+          </dl>
         </div>
       </div>
 

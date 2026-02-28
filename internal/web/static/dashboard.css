@@ -2745,6 +2745,65 @@
   color: var(--accent);
 }
 
+/* ── Help panel ────────────────────────────────────────────────── */
+
+.sidebar-help-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+  margin-bottom: 6px;
+}
+
+.sidebar-help-btn:hover {
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+.modal--wide {
+  max-width: 500px;
+}
+
+.help-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.help-body h3 {
+  font-size: 0.85rem;
+  margin: 16px 0 8px;
+  color: var(--accent);
+}
+
+.help-body h3:first-child {
+  margin-top: 0;
+}
+
+.help-list {
+  margin: 0;
+}
+
+.help-list dt {
+  font-weight: 600;
+  font-size: 0.82rem;
+  float: left;
+  width: 120px;
+  color: var(--text);
+}
+
+.help-list dd {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  margin-left: 130px;
+  margin-bottom: 6px;
+}
+
 /* ── Notification badge ────────────────────────────────────────── */
 
 .notification-badge {
