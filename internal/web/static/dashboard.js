@@ -2023,206 +2023,6 @@
     this.pending = false
   }
 
-  // ── Tool Renderers ──────────────────────────────────────────────
-  var ToolRenderers = {
-    _renderers: Object.create(null),
-
-    register: function (name, renderer) {
-      this._renderers[name] = renderer
-    },
-
-    get: function (name) {
-      return this._renderers[name] || this._defaultRenderer
-    },
-
-    render: function (name, input, result, augment) {
-      var renderer = this.get(name)
-      return renderer(input, result, augment)
-    },
-
-    _defaultRenderer: function (input, result) {
-      var block = el("div", "tool-block")
-      var header = el("div", "tool-header")
-      var icon = el("span", "tool-icon", "\u2699")
-      header.appendChild(icon)
-      var label = el("span", "tool-command", "Tool Result")
-      header.appendChild(label)
-      block.appendChild(header)
-
-      var body = el("div", "tool-body")
-      if (input) {
-        var inputPre = document.createElement("pre")
-        inputPre.appendChild(document.createTextNode(JSON.stringify(input, null, 2)))
-        body.appendChild(inputPre)
-      }
-      if (result) {
-        var resultPre = document.createElement("pre")
-        resultPre.appendChild(document.createTextNode(JSON.stringify(result, null, 2)))
-        body.appendChild(resultPre)
-      }
-      block.appendChild(body)
-      return block
-    },
-  }
-
-  function escapeHtml(s) {
-    if (!s) return ""
-    var div = document.createElement("div")
-    div.textContent = s
-    return div.innerHTML
-  }
-
-  // ── Bash Renderer ──────────────────────────────────────────────
-  ToolRenderers.register("Bash", function (input, result, augment) {
-    var block = el("div", "tool-block")
-    var header = el("div", "tool-header")
-
-    var icon = el("span", "tool-icon", "$")
-    header.appendChild(icon)
-
-    var command = input && input.command ? input.command : ""
-    var cmdSpan = el("span", "tool-command")
-    cmdSpan.textContent = command
-    header.appendChild(cmdSpan)
-
-    // Error badge if exit code != 0
-    var exitCode = result && result.exitCode != null ? result.exitCode : 0
-    if (exitCode !== 0) {
-      var badge = el("span", "tool-badge tool-badge--error", "exit " + exitCode)
-      header.appendChild(badge)
-    }
-
-    header.style.cursor = "pointer"
-    block.appendChild(header)
-
-    var body = el("div", "tool-body tool-collapsed")
-
-    // stdout
-    var stdout = result && result.stdout ? result.stdout : (result && typeof result === "string" ? result : "")
-    if (stdout) {
-      var stdoutPre = document.createElement("pre")
-      stdoutPre.appendChild(document.createTextNode(stdout))
-      body.appendChild(stdoutPre)
-    }
-
-    // stderr
-    var stderr = result && result.stderr ? result.stderr : ""
-    if (stderr) {
-      var stderrPre = document.createElement("pre")
-      stderrPre.className = "tool-stderr"
-      stderrPre.appendChild(document.createTextNode(stderr))
-      body.appendChild(stderrPre)
-    }
-
-    block.appendChild(body)
-
-    header.addEventListener("click", function () {
-      body.classList.toggle("tool-collapsed")
-    })
-
-    return block
-  })
-
-  // ── Edit Renderer ──────────────────────────────────────────────
-  ToolRenderers.register("Edit", function (input, result, augment) {
-    var block = el("div", "tool-block")
-    var header = el("div", "tool-header")
-
-    var icon = el("span", "tool-icon", "\u270E")
-    header.appendChild(icon)
-
-    var filename = input && input.file_path ? input.file_path : (input && input.filePath ? input.filePath : "unknown")
-    var fnSpan = el("span", "tool-filename")
-    fnSpan.textContent = filename
-    header.appendChild(fnSpan)
-
-    // +N / -N badges from augment
-    if (augment) {
-      if (augment.additions != null && augment.additions > 0) {
-        var addBadge = el("span", "tool-badge tool-badge--add", "+" + augment.additions)
-        header.appendChild(addBadge)
-      }
-      if (augment.deletions != null && augment.deletions > 0) {
-        var delBadge = el("span", "tool-badge tool-badge--del", "-" + augment.deletions)
-        header.appendChild(delBadge)
-      }
-    }
-
-    header.style.cursor = "pointer"
-    block.appendChild(header)
-
-    var body = el("div", "tool-body tool-collapsed")
-
-    // Server-rendered diff HTML (pre-sanitized by Go server's escapeHTML)
-    if (augment && augment.diffHtml) {
-      var diffContainer = document.createElement("div")
-      diffContainer.setAttribute("data-server-rendered", "true")
-      // Safe: diffHtml is pre-sanitized by server-side escapeHTML()
-      diffContainer.insertAdjacentHTML("beforeend", augment.diffHtml)
-      body.appendChild(diffContainer)
-    } else if (result) {
-      var resultPre = document.createElement("pre")
-      resultPre.appendChild(document.createTextNode(typeof result === "string" ? result : JSON.stringify(result, null, 2)))
-      body.appendChild(resultPre)
-    }
-
-    block.appendChild(body)
-
-    header.addEventListener("click", function () {
-      body.classList.toggle("tool-collapsed")
-    })
-
-    return block
-  })
-
-  // ── Read Renderer ──────────────────────────────────────────────
-  ToolRenderers.register("Read", function (input, result, augment) {
-    var block = el("div", "tool-block")
-    var header = el("div", "tool-header")
-
-    var icon = el("span", "tool-icon", "\uD83D\uDCC4")
-    header.appendChild(icon)
-
-    var filename = input && input.file_path ? input.file_path : (input && input.filePath ? input.filePath : "unknown")
-    var fnSpan = el("span", "tool-filename")
-    fnSpan.textContent = filename
-    header.appendChild(fnSpan)
-
-    // Line count badge
-    var content = result && typeof result === "string" ? result : ""
-    if (content) {
-      var lines = content.split("\n").length
-      var linesBadge = el("span", "tool-badge", lines + " lines")
-      header.appendChild(linesBadge)
-    }
-
-    header.style.cursor = "pointer"
-    block.appendChild(header)
-
-    var body = el("div", "tool-body tool-collapsed")
-
-    // Server-rendered highlighted content from augment
-    if (augment && augment.highlightedHtml) {
-      var hlContainer = document.createElement("div")
-      hlContainer.setAttribute("data-server-rendered", "true")
-      // Safe: highlightedHtml is pre-sanitized by server-side escapeHTML()
-      hlContainer.insertAdjacentHTML("beforeend", augment.highlightedHtml)
-      body.appendChild(hlContainer)
-    } else if (content) {
-      var contentPre = document.createElement("pre")
-      contentPre.appendChild(document.createTextNode(content))
-      body.appendChild(contentPre)
-    }
-
-    block.appendChild(body)
-
-    header.addEventListener("click", function () {
-      body.classList.toggle("tool-collapsed")
-    })
-
-    return block
-  })
-
   // ── Terminal management ───────────────────────────────────────────
   function connectTerminal(task) {
     disconnectTerminal()
@@ -3197,76 +2997,76 @@
     if (!sessionId) return
     state.lastLoadedMessagesSession = sessionId
 
-    var url = apiPathWithToken("/api/messages/" + encodeURIComponent(sessionId))
+    var url = apiPathWithToken("/api/messages/" + encodeURIComponent(sessionId) + "/html")
     fetch(url, { headers: authHeaders() })
       .then(function (r) {
         if (!r.ok) throw new Error("messages fetch failed: " + r.status)
-        return r.json()
+        return r.text()
       })
-      .then(function (data) {
-        var messages = data && data.messages ? data.messages : []
-        renderMessages(messages)
+      .then(function (html) {
+        var container = document.getElementById("messages-container")
+        if (!container) return
+        var wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50
+        clearChildren(container)
+        // Server-rendered HTML is from our own authenticated endpoint,
+        // pre-sanitized by Go html/template. Parse and adopt nodes safely.
+        var parser = new DOMParser()
+        var doc = parser.parseFromString(html, "text/html")
+        while (doc.body.firstChild) {
+          container.appendChild(doc.body.firstChild)
+        }
+        initMessageInteractions(container)
+        if (wasAtBottom) {
+          container.scrollTop = container.scrollHeight
+        }
       })
       .catch(function (err) {
         console.error("loadSessionMessages:", err)
         var container = document.getElementById("messages-container")
         if (container) {
           clearChildren(container)
-          container.appendChild(el("div", "terminal-placeholder", "Failed to load messages."))
+          container.appendChild(el("div", "messages-empty", "Failed to load messages."))
         }
       })
   }
 
-  function renderMessages(messages) {
-    var container = document.getElementById("messages-container")
-    if (!container) return
-
-    clearChildren(container)
-
-    if (!messages || messages.length === 0) {
-      container.appendChild(el("div", "terminal-placeholder", "No messages yet."))
-      return
-    }
-
-    for (var i = 0; i < messages.length; i++) {
-      var msg = messages[i]
-      var role = msg.role || msg.type || "unknown"
-      var variant = role === "user" ? "--user" : "--assistant"
-      var msgBlock = el("div", "message-block message-block" + variant)
-
-      // Role label
-      var roleLabel = el("div", "message-role")
-      roleLabel.textContent = role.charAt(0).toUpperCase() + role.slice(1)
-      msgBlock.appendChild(roleLabel)
-
-      // Message content text
-      if (msg.content) {
-        var contentDiv = el("div", "message-content")
-        contentDiv.textContent = msg.content
-        msgBlock.appendChild(contentDiv)
+  function initMessageInteractions(container) {
+    // Tool header click -> toggle body visibility (event delegation)
+    container.addEventListener("click", function (e) {
+      var header = e.target.closest(".tool-header")
+      if (header) {
+        var body = header.nextElementSibling
+        if (body && body.classList.contains("tool-body")) {
+          body.classList.toggle("tool-collapsed")
+        }
+        return
       }
 
-      // Tool result rendering
-      if (msg.toolName) {
-        try {
-          var toolEl = ToolRenderers.render(
-            msg.toolName,
-            msg.toolInput || null,
-            msg.toolResult || null,
-            msg.augment || null
-          )
-          msgBlock.appendChild(toolEl)
-        } catch (err) {
-          console.error("ToolRenderers.render failed for", msg.toolName, err)
-          msgBlock.appendChild(el("div", "tool-block", "[tool: " + msg.toolName + "]"))
+      // Show more/less button
+      var btn = e.target.closest(".show-more-btn")
+      if (btn) {
+        var textBlock = btn.closest(".collapsible-text")
+        if (textBlock) {
+          var truncated = textBlock.querySelector(".truncated-content")
+          if (truncated) {
+            var isExpanded = truncated.style.maxHeight === "none"
+            if (!isExpanded) {
+              truncated.style.maxHeight = "none"
+              truncated.style.overflow = "visible"
+              var overlay = truncated.querySelector(".fade-overlay")
+              if (overlay) overlay.style.display = "none"
+              btn.textContent = "Show less"
+            } else {
+              truncated.style.maxHeight = ""
+              truncated.style.overflow = ""
+              var overlay2 = truncated.querySelector(".fade-overlay")
+              if (overlay2) overlay2.style.display = ""
+              btn.textContent = "Show more"
+            }
+          }
         }
       }
-
-      container.appendChild(msgBlock)
-    }
-
-    // Scroll to bottom
-    container.scrollTop = container.scrollHeight
+    })
   }
 
   function switchDetailTab(tabName) {
