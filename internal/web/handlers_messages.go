@@ -32,9 +32,9 @@ type augmentedMessage struct {
 
 // messagesResponse is the JSON response for /api/messages/{id}.
 type messagesResponse struct {
-	SessionID string              `json:"sessionId"`
-	Messages  []augmentedMessage  `json:"messages"`
-	DAGInfo   messagesDAGInfo     `json:"dagInfo"`
+	SessionID string             `json:"sessionId"`
+	Messages  []augmentedMessage `json:"messages"`
+	DAGInfo   messagesDAGInfo    `json:"dagInfo"`
 }
 
 // messagesDAGInfo contains DAG metadata about the conversation.
