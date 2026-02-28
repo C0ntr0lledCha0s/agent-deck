@@ -3373,7 +3373,9 @@
     attachBtn.type = "button"
     attachBtn.setAttribute("aria-label", "Attach file")
     attachBtn.textContent = "\uD83D\uDCCE" // paperclip emoji
-    chatBarEl.insertBefore(attachBtn, chatBarEl.querySelector(".chat-input"))
+    var chatInner = chatBarEl.querySelector(".chat-bar-inner") || chatBarEl
+    var chatInput = chatInner.querySelector(".chat-input")
+    if (chatInput) chatInner.insertBefore(attachBtn, chatInput)
     attachBtn.addEventListener("click", function () {
       var input = document.createElement("input")
       input.type = "file"
