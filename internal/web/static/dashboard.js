@@ -9,11 +9,13 @@
     activeView: "agents",
     projectFilter: "",
     authToken: readAuthTokenFromURL(),
-    menuEvents: null,
     terminal: null,
     terminalWs: null,
     previewStream: null,
     fitAddon: null,
+    terminalResizeObserver: null,
+    terminalFontSize: 14,
+    terminalFullscreen: false,
     chatMode: null,
     chatModeOverride: null,
     sessionMap: {},  // menuSession.id → menuSession (from SSE menu events)
@@ -60,6 +62,21 @@
     return null
   }
 
+  // Return the session.Instance ID to use for the messages API.
+  // Prefers the active hub session's claudeSessionId; falls back to
+  // task.tmuxSession for container-backed tasks.
+  function getSessionIdForMessages(task) {
+    if (!task) return null
+    if (task.sessions) {
+      for (var i = task.sessions.length - 1; i >= 0; i--) {
+        if (task.sessions[i].status === "active" && task.sessions[i].claudeSessionId) {
+          return task.sessions[i].claudeSessionId
+        }
+      }
+    }
+    return task.tmuxSession || null
+  }
+
   function mapSessionStatus(sessionStatus) {
     switch (sessionStatus) {
       case "running": return "running"
@@ -69,6 +86,19 @@
       case "starting": return "thinking"
       default:        return "idle"
     }
+  }
+
+  // Return the effective agent status for a task. If a live session exists
+  // in the sessionMap, use its real-time status. Otherwise fall back to the
+  // task's persisted agentStatus — but treat transient states ("thinking",
+  // "running") as "idle" when no live session backs them, since the agent
+  // is no longer active.
+  function effectiveAgentStatus(task) {
+    var live = getActiveSessionForTask(task)
+    if (live) return mapSessionStatus(live.status)
+    var s = task.agentStatus || ""
+    if (s === "thinking" || s === "running") return "idle"
+    return s || "idle"
   }
 
   // ── Auth ──────────────────────────────────────────────────────────
@@ -143,6 +173,37 @@
       })
   }
 
+  // Fetch menu snapshot and populate sessionMap so live terminal
+  // connections and messages can resolve session.Instance IDs to
+  // their tmux session names and project paths.
+  function fetchMenuData() {
+    return fetch(apiPathWithToken("/api/menu"), { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("menu fetch failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        var items = data && data.items ? data.items : []
+        var map = {}
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].type === "session" && items[i].session) {
+            map[items[i].session.id] = items[i].session
+          }
+        }
+        state.sessionMap = map
+        // Re-render so agent status badges reflect live session data
+        // (resolves race where tasks render before sessionMap is populated).
+        renderTaskList()
+        if (state.selectedTaskId) {
+          var task = findTask(state.selectedTaskId)
+          if (task) renderRightPanel(task)
+        }
+      })
+      .catch(function (err) {
+        console.error("fetchMenuData:", err)
+      })
+  }
+
   function findTask(id) {
     for (var i = 0; i < state.tasks.length; i++) {
       if (state.tasks[i].id === id) return state.tasks[i]
@@ -151,72 +212,10 @@
   }
 
   function getCardBorderColor(task) {
-    if (task.agentStatus === "waiting") return "var(--orange)"
+    if (effectiveAgentStatus(task) === "waiting") return "var(--orange)"
     return TASK_STATUS_COLORS[task.status] || "var(--text-dim)"
   }
 
-  // ── SSE ───────────────────────────────────────────────────────────
-  function connectSSE() {
-    if (state.menuEvents) {
-      state.menuEvents.close()
-      state.menuEvents = null
-    }
-
-    setConnectionState("connecting")
-    var url = apiPathWithToken("/events/menu")
-    var es = new EventSource(url)
-    state.menuEvents = es
-
-    es.addEventListener("menu", function (e) {
-      setConnectionState("connected")
-      try {
-        var data = JSON.parse(e.data)
-        // Build session lookup map
-        state.sessionMap = {}
-        var items = data.items || []
-        for (var i = 0; i < items.length; i++) {
-          if (items[i].session) {
-            state.sessionMap[items[i].session.id] = items[i].session
-          }
-        }
-      } catch (err) {
-        console.error("menu SSE parse error:", err)
-      }
-      fetchTasks()
-    })
-
-    es.addEventListener("tasks", function (e) {
-      try {
-        var data = JSON.parse(e.data)
-        state.tasks = data.tasks || []
-        renderTaskList()
-        updateAgentCount()
-        if (state.selectedTaskId) {
-          var task = findTask(state.selectedTaskId)
-          if (task) {
-            renderRightPanel(task)
-            renderChatBar()
-            renderAskBanner()
-          }
-        }
-      } catch (err) {
-        console.error("tasks SSE parse error:", err)
-      }
-    })
-
-    es.onopen = function () {
-      setConnectionState("connected")
-    }
-
-    es.onerror = function () {
-      if (es.readyState === EventSource.CLOSED) {
-        setConnectionState("closed")
-        setTimeout(connectSSE, 5000)
-      } else {
-        setConnectionState("reconnecting")
-      }
-    }
-  }
 
   function setConnectionState(s) {
     var dot = document.getElementById("sidebar-status-dot")
@@ -235,6 +234,253 @@
       if (state.tasks[i].status !== "done") active++
     }
     if (countEl) countEl.textContent = active + " agent" + (active !== 1 ? "s" : "")
+  }
+
+  // ── ConnectionManager (WebSocket with auto-reconnect) ────────────
+  function ConnectionManager(url) {
+    this.url = url
+    this.state = "disconnected"
+    this.ws = null
+    this.lastEventAt = 0
+    this.reconnectAttempts = 0
+    this.subscriptions = {}
+    this._listeners = { stateChange: [], reconnect: [] }
+    this._staleTimer = null
+    this._reconnectTimer = null
+    this._pongTimer = null
+    this._awaitingPong = false
+
+    // Config
+    this.staleThresholdMs = 45000
+    this.pongTimeoutMs = 2000
+    this.baseDelayMs = 1000
+    this.maxDelayMs = 30000
+    this.maxAttempts = 10
+  }
+
+  ConnectionManager.prototype.connect = function () {
+    var self = this
+    var wasConnected = this.state === "connected" || this.state === "reconnecting"
+    if (this.ws) {
+      try { this.ws.close() } catch (_) { /* ignore */ }
+    }
+    if (wasConnected) {
+      this._setState("reconnecting")
+    }
+    var ws = new WebSocket(this.url)
+    this.ws = ws
+
+    ws.onopen = function () {
+      var isReconnect = self.reconnectAttempts > 0
+      self.reconnectAttempts = 0
+      self.lastEventAt = Date.now()
+      self._setState("connected")
+      self._resubscribeAll()
+      self._startStaleCheck()
+      // Fire reconnect listeners after connection is fully established
+      if (isReconnect) {
+        for (var i = 0; i < self._listeners.reconnect.length; i++) {
+          try { self._listeners.reconnect[i]() } catch (_) { /* ignore */ }
+        }
+      }
+    }
+
+    ws.onmessage = function (e) {
+      self.lastEventAt = Date.now()
+      try {
+        var msg = JSON.parse(e.data)
+        self._handleMessage(msg)
+      } catch (err) {
+        console.error("ConnectionManager: bad message", err)
+      }
+    }
+
+    ws.onclose = function () {
+      self.ws = null
+      self._stopStaleCheck()
+      if (self.state !== "disconnected") {
+        self._setState("reconnecting")
+        self._scheduleReconnect()
+      }
+    }
+
+    ws.onerror = function () {
+      // onclose will fire after onerror, so reconnect logic lives there
+    }
+
+    this._setupVisibility()
+  }
+
+  ConnectionManager.prototype._handleMessage = function (msg) {
+    if (!msg || !msg.type) return
+
+    if (msg.type === "pong") {
+      this._awaitingPong = false
+      if (this._pongTimer) {
+        clearTimeout(this._pongTimer)
+        this._pongTimer = null
+      }
+      return
+    }
+
+    if (msg.type === "heartbeat") {
+      // heartbeat keeps connection alive; lastEventAt already updated
+      return
+    }
+
+    // Event or snapshot: dispatch to channel subscribers
+    var channel = msg.channel || ""
+    if (channel && this.subscriptions[channel]) {
+      var handlers = this.subscriptions[channel]
+      for (var i = 0; i < handlers.length; i++) {
+        try { handlers[i](msg) } catch (err) {
+          console.error("ConnectionManager: handler error on " + channel, err)
+        }
+      }
+    }
+  }
+
+  ConnectionManager.prototype.subscribe = function (channel, handler) {
+    if (!this.subscriptions[channel]) {
+      this.subscriptions[channel] = []
+    }
+    this.subscriptions[channel].push(handler)
+
+    // Send subscribe message if already connected
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "subscribe", channel: channel }))
+    }
+
+    var self = this
+    return function () {
+      var arr = self.subscriptions[channel]
+      if (!arr) return
+      var idx = arr.indexOf(handler)
+      if (idx !== -1) arr.splice(idx, 1)
+      if (arr.length === 0) delete self.subscriptions[channel]
+    }
+  }
+
+  ConnectionManager.prototype._resubscribeAll = function () {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    var channels = Object.keys(this.subscriptions)
+    for (var i = 0; i < channels.length; i++) {
+      try {
+        this.ws.send(JSON.stringify({ type: "subscribe", channel: channels[i] }))
+      } catch (_) { /* ws may have closed mid-loop */ }
+    }
+  }
+
+  ConnectionManager.prototype._scheduleReconnect = function () {
+    var self = this
+    if (this._reconnectTimer) return
+    if (this.reconnectAttempts >= this.maxAttempts) {
+      self._setState("disconnected")
+      return
+    }
+
+    var delay = Math.min(
+      this.baseDelayMs * Math.pow(2, this.reconnectAttempts),
+      this.maxDelayMs
+    )
+    // Jitter: multiply by (0.5 + random * 0.5) so delay is between 50%-100% of computed value
+    delay = Math.floor(delay * (0.5 + Math.random() * 0.5))
+    this.reconnectAttempts++
+
+    this._reconnectTimer = setTimeout(function () {
+      self._reconnectTimer = null
+      self.connect()
+    }, delay)
+  }
+
+  ConnectionManager.prototype._startStaleCheck = function () {
+    var self = this
+    this._stopStaleCheck()
+    this._staleTimer = setInterval(function () {
+      if (self.state !== "connected") return
+      var elapsed = Date.now() - self.lastEventAt
+      if (elapsed > self.staleThresholdMs) {
+        // Connection appears stale — attempt recovery via ping
+        self._checkWithPing()
+      }
+    }, 15000)
+  }
+
+  ConnectionManager.prototype._stopStaleCheck = function () {
+    if (this._staleTimer) {
+      clearInterval(this._staleTimer)
+      this._staleTimer = null
+    }
+  }
+
+  ConnectionManager.prototype._setupVisibility = function () {
+    var self = this
+    // Only set up once
+    if (this._visibilityBound) return
+    this._visibilityBound = true
+
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible" && self.state === "connected") {
+        self._checkWithPing()
+      }
+    })
+  }
+
+  ConnectionManager.prototype._checkWithPing = function () {
+    var self = this
+    if (this._awaitingPong) return
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+
+    this._awaitingPong = true
+    try {
+      this.ws.send(JSON.stringify({ type: "ping" }))
+    } catch (_) {
+      this._awaitingPong = false
+      return
+    }
+
+    this._pongTimer = setTimeout(function () {
+      self._pongTimer = null
+      if (self._awaitingPong) {
+        // No pong received in time — connection is dead
+        self._awaitingPong = false
+        if (self.ws) {
+          try { self.ws.close() } catch (_) { /* ignore */ }
+        }
+      }
+    }, this.pongTimeoutMs)
+  }
+
+  ConnectionManager.prototype._setState = function (newState) {
+    if (this.state === newState) return
+    var oldState = this.state
+    this.state = newState
+    for (var i = 0; i < this._listeners.stateChange.length; i++) {
+      try { this._listeners.stateChange[i](newState, oldState) } catch (_) { /* ignore */ }
+    }
+  }
+
+  ConnectionManager.prototype.on = function (event, handler) {
+    if (this._listeners[event]) {
+      this._listeners[event].push(handler)
+    }
+  }
+
+  ConnectionManager.prototype.disconnect = function () {
+    this._setState("disconnected")
+    this._stopStaleCheck()
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer)
+      this._reconnectTimer = null
+    }
+    if (this._pongTimer) {
+      clearTimeout(this._pongTimer)
+      this._pongTimer = null
+    }
+    if (this.ws) {
+      try { this.ws.close() } catch (_) { /* ignore */ }
+      this.ws = null
+    }
   }
 
   // ── Sidebar ───────────────────────────────────────────────────────
@@ -736,8 +982,9 @@
     var footer = el("div", "kanban-card-footer")
     footer.appendChild(el("span", "kanban-card-id", task.id || ""))
 
-    if (task.agentStatus) {
-      var meta = AGENT_STATUS_META[task.agentStatus]
+    var kanbanStatus = effectiveAgentStatus(task)
+    if (kanbanStatus) {
+      var meta = AGENT_STATUS_META[kanbanStatus]
       if (meta) {
         var statusEl = el("span", "kanban-card-status")
         statusEl.style.color = meta.color
@@ -1167,6 +1414,46 @@
     renderChatBar()
   }
 
+  // ── Tier definitions ──────────────────────────────────────────────
+  var TIER_DEFS = [
+    { key: "needsAttention", label: "Needs Attention", cssVar: "--needsAttention" },
+    { key: "active",         label: "Active",          cssVar: "--active" },
+    { key: "recent",         label: "Recent",          cssVar: "--recent" },
+    { key: "idle",           label: "Idle",            cssVar: "--idle" },
+  ]
+
+  var RECENT_THRESHOLD_MS = 30 * 60 * 1000
+
+  function assignTaskTier(task) {
+    // Prefer server-provided tier if present
+    if (task.tier) return
+    var s = effectiveAgentStatus(task)
+    if (s === "waiting" || s === "error") {
+      task.tier = "needsAttention"
+      task.tierBadge = s === "waiting" ? "approval" : "error"
+    } else if (s === "running" || s === "thinking" || s === "starting") {
+      task.tier = "active"
+      task.tierBadge = ""
+    } else if (s === "idle" || s === "") {
+      var updatedAt = task.updatedAt ? new Date(task.updatedAt).getTime() : 0
+      if (updatedAt && (Date.now() - updatedAt) < RECENT_THRESHOLD_MS) {
+        task.tier = "recent"
+      } else {
+        task.tier = "idle"
+      }
+      task.tierBadge = ""
+    } else if (s === "complete") {
+      task.tier = "idle"
+      task.tierBadge = ""
+    } else {
+      task.tier = "idle"
+      task.tierBadge = ""
+    }
+  }
+
+  // Track collapsed state for tier sections
+  var tierCollapsed = { idle: true }
+
   // ── Task list ─────────────────────────────────────────────────────
   function renderTaskList() {
     var taskList = document.getElementById("task-list")
@@ -1179,10 +1466,15 @@
       return true
     })
 
-    // Remove existing cards and section headers
-    var existing = taskList.querySelectorAll(".agent-card, .task-section-header")
+    // Remove existing tier sections
+    var existing = taskList.querySelectorAll(".tier-section")
     for (var i = 0; i < existing.length; i++) {
       existing[i].remove()
+    }
+    // Also remove any legacy cards/headers outside tier sections
+    var legacy = taskList.querySelectorAll(".agent-card, .task-section-header")
+    for (var li = 0; li < legacy.length; li++) {
+      legacy[li].remove()
     }
 
     if (visible.length === 0) {
@@ -1197,37 +1489,71 @@
 
     if (emptyEl) emptyEl.style.display = "none"
 
-    // Split into active and completed
-    var active = []
-    var completed = []
+    // Assign tiers to each task
     for (var j = 0; j < visible.length; j++) {
-      if (visible[j].status === "done") {
-        completed.push(visible[j])
-      } else {
-        active.push(visible[j])
-      }
+      assignTaskTier(visible[j])
     }
 
-    // Active section
-    if (active.length > 0) {
-      var activeHeader = el("div", "task-section-header")
-      activeHeader.appendChild(el("span", null, "Active \u00B7 " + active.length))
-      taskList.appendChild(activeHeader)
-
-      for (var a = 0; a < active.length; a++) {
-        taskList.appendChild(createAgentCard(active[a]))
-      }
+    // Group by tier
+    var tierBuckets = {}
+    for (var td = 0; td < TIER_DEFS.length; td++) {
+      tierBuckets[TIER_DEFS[td].key] = []
+    }
+    for (var k = 0; k < visible.length; k++) {
+      var tierKey = visible[k].tier || "idle"
+      if (!tierBuckets[tierKey]) tierBuckets[tierKey] = []
+      tierBuckets[tierKey].push(visible[k])
     }
 
-    // Completed section
-    if (completed.length > 0) {
-      var completedHeader = el("div", "task-section-header")
-      completedHeader.appendChild(el("span", null, "Completed \u00B7 " + completed.length))
-      taskList.appendChild(completedHeader)
+    // Render each non-empty tier section
+    for (var t = 0; t < TIER_DEFS.length; t++) {
+      var def = TIER_DEFS[t]
+      var bucket = tierBuckets[def.key]
+      if (bucket.length === 0) continue
 
-      for (var c = 0; c < completed.length; c++) {
-        taskList.appendChild(createAgentCard(completed[c]))
+      var section = el("div", "tier-section tier-section" + def.cssVar)
+      section.dataset.tier = def.key
+
+      // Header
+      var header = el("div", "tier-header tier-header" + def.cssVar)
+      var headerLeft = el("span", null)
+
+      // Pulse dot for active tier
+      if (def.key === "active") {
+        var dot = el("span", "pulse-dot")
+        headerLeft.appendChild(dot)
+        headerLeft.appendChild(document.createTextNode(" "))
       }
+
+      headerLeft.appendChild(document.createTextNode(def.label))
+      header.appendChild(headerLeft)
+
+      var badge = el("span", "tier-badge", bucket.length.toString())
+      header.appendChild(badge)
+
+      var isCollapsed = !!tierCollapsed[def.key]
+      if (isCollapsed) {
+        section.classList.add("tier-collapsed")
+      }
+
+      // Toggle collapse on header click (needsAttention always expanded)
+      ;(function (sectionEl, tierKey) {
+        header.addEventListener("click", function () {
+          if (tierKey === "needsAttention") return
+          tierCollapsed[tierKey] = !tierCollapsed[tierKey]
+          sectionEl.classList.toggle("tier-collapsed")
+        })
+      })(section, def.key)
+
+      header.style.cursor = "pointer"
+      section.appendChild(header)
+
+      // Cards
+      for (var c = 0; c < bucket.length; c++) {
+        section.appendChild(createAgentCard(bucket[c]))
+      }
+
+      taskList.appendChild(section)
     }
   }
 
@@ -1248,15 +1574,11 @@
     top.appendChild(el("span", "agent-card-project", task.project || "\u2014"))
     var topRight = el("div", "agent-card-footer")
     topRight.style.gap = "6px"
-    if (task.agentStatus === "waiting" && task.askQuestion) {
+    var cardStatus = effectiveAgentStatus(task)
+    if (cardStatus === "waiting" && task.askQuestion) {
       topRight.appendChild(el("span", "ask-badge", "\u25D0 INPUT"))
     }
-    var liveSession = getActiveSessionForTask(task)
-    if (liveSession) {
-      topRight.appendChild(createAgentStatusBadge(mapSessionStatus(liveSession.status)))
-    } else {
-      topRight.appendChild(createAgentStatusBadge(task.agentStatus))
-    }
+    topRight.appendChild(createAgentStatusBadge(cardStatus))
     top.appendChild(topRight)
     card.appendChild(top)
 
@@ -1383,6 +1705,25 @@
     renderSessionChain(task)
     renderPreviewHeader(task)
     renderClaudeMeta(task)
+
+    // If the Messages tab is currently active, reload messages for the new task.
+    var activeTab = document.querySelector(".detail-tab--active")
+    if (activeTab && activeTab.dataset.tab === "messages") {
+      var msgSessionId = getSessionIdForMessages(task)
+      if (msgSessionId) {
+        if (msgSessionId !== state.lastLoadedMessagesSession) {
+          loadSessionMessages(msgSessionId)
+        }
+      } else {
+        // New task has no session — clear stale messages from previous task.
+        state.lastLoadedMessagesSession = null
+        var mc = document.getElementById("messages-container")
+        if (mc) {
+          clearChildren(mc)
+          mc.appendChild(el("div", "terminal-placeholder", "No conversation data available."))
+        }
+      }
+    }
   }
 
   // ── Detail header ─────────────────────────────────────────────────
@@ -1402,12 +1743,7 @@
     top.appendChild(el("span", "detail-title", task.description || "\u2014"))
 
     var actions = el("div", "detail-actions")
-    var detailLive = getActiveSessionForTask(task)
-    if (detailLive) {
-      actions.appendChild(createAgentStatusBadge(mapSessionStatus(detailLive.status)))
-    } else {
-      actions.appendChild(createAgentStatusBadge(task.agentStatus))
-    }
+    actions.appendChild(createAgentStatusBadge(effectiveAgentStatus(task)))
     top.appendChild(actions)
 
     header.appendChild(top)
@@ -1548,8 +1884,7 @@
     leftGroup.style.alignItems = "center"
     leftGroup.appendChild(el("span", "preview-header-project", task.project || "\u2014"))
 
-    var previewLive = getActiveSessionForTask(task)
-    var effectiveStatus = previewLive ? mapSessionStatus(previewLive.status) : task.agentStatus
+    var effectiveStatus = effectiveAgentStatus(task)
     var agentMeta = AGENT_STATUS_META[effectiveStatus] || AGENT_STATUS_META.idle
     var statusSpan = el("span", "preview-header-agent-status")
     statusSpan.textContent = agentMeta.icon + " " + agentMeta.label
@@ -1561,7 +1896,7 @@
     row.appendChild(leftGroup)
 
     // NEEDS INPUT badge
-    if (task.agentStatus === "waiting" && task.askQuestion) {
+    if (effectiveStatus === "waiting" && task.askQuestion) {
       var needsInput = el("span", "preview-header-needs-input", "NEEDS INPUT")
       needsInput.style.background = "rgba(245, 158, 11, 0.12)"
       needsInput.style.border = "1px solid rgba(245, 158, 11, 0.25)"
@@ -1657,6 +1992,237 @@
     container.appendChild(hints)
   }
 
+  // ── OutputBuffer (throttles writes to xterm.js) ──────────────────
+  function OutputBuffer(terminal) {
+    this.terminal = terminal
+    this.buffer = ""
+    this.pending = false
+    this.maxBufferSize = 65536 // 64 KB
+  }
+
+  OutputBuffer.prototype.write = function (data) {
+    this.buffer += data
+    if (this.buffer.length >= this.maxBufferSize) {
+      this.flush()
+      return
+    }
+    if (!this.pending) {
+      this.pending = true
+      var self = this
+      requestAnimationFrame(function () {
+        self.flush()
+      })
+    }
+  }
+
+  OutputBuffer.prototype.flush = function () {
+    if (this.buffer.length > 0) {
+      this.terminal.write(this.buffer)
+      this.buffer = ""
+    }
+    this.pending = false
+  }
+
+  // ── Tool Renderers ──────────────────────────────────────────────
+  var ToolRenderers = {
+    _renderers: Object.create(null),
+
+    register: function (name, renderer) {
+      this._renderers[name] = renderer
+    },
+
+    get: function (name) {
+      return this._renderers[name] || this._defaultRenderer
+    },
+
+    render: function (name, input, result, augment) {
+      var renderer = this.get(name)
+      return renderer(input, result, augment)
+    },
+
+    _defaultRenderer: function (input, result) {
+      var block = el("div", "tool-block")
+      var header = el("div", "tool-header")
+      var icon = el("span", "tool-icon", "\u2699")
+      header.appendChild(icon)
+      var label = el("span", "tool-command", "Tool Result")
+      header.appendChild(label)
+      block.appendChild(header)
+
+      var body = el("div", "tool-body")
+      if (input) {
+        var inputPre = document.createElement("pre")
+        inputPre.appendChild(document.createTextNode(JSON.stringify(input, null, 2)))
+        body.appendChild(inputPre)
+      }
+      if (result) {
+        var resultPre = document.createElement("pre")
+        resultPre.appendChild(document.createTextNode(JSON.stringify(result, null, 2)))
+        body.appendChild(resultPre)
+      }
+      block.appendChild(body)
+      return block
+    },
+  }
+
+  function escapeHtml(s) {
+    if (!s) return ""
+    var div = document.createElement("div")
+    div.textContent = s
+    return div.innerHTML
+  }
+
+  // ── Bash Renderer ──────────────────────────────────────────────
+  ToolRenderers.register("Bash", function (input, result, augment) {
+    var block = el("div", "tool-block")
+    var header = el("div", "tool-header")
+
+    var icon = el("span", "tool-icon", "$")
+    header.appendChild(icon)
+
+    var command = input && input.command ? input.command : ""
+    var cmdSpan = el("span", "tool-command")
+    cmdSpan.textContent = command
+    header.appendChild(cmdSpan)
+
+    // Error badge if exit code != 0
+    var exitCode = result && result.exitCode != null ? result.exitCode : 0
+    if (exitCode !== 0) {
+      var badge = el("span", "tool-badge tool-badge--error", "exit " + exitCode)
+      header.appendChild(badge)
+    }
+
+    header.style.cursor = "pointer"
+    block.appendChild(header)
+
+    var body = el("div", "tool-body tool-collapsed")
+
+    // stdout
+    var stdout = result && result.stdout ? result.stdout : (result && typeof result === "string" ? result : "")
+    if (stdout) {
+      var stdoutPre = document.createElement("pre")
+      stdoutPre.appendChild(document.createTextNode(stdout))
+      body.appendChild(stdoutPre)
+    }
+
+    // stderr
+    var stderr = result && result.stderr ? result.stderr : ""
+    if (stderr) {
+      var stderrPre = document.createElement("pre")
+      stderrPre.className = "tool-stderr"
+      stderrPre.appendChild(document.createTextNode(stderr))
+      body.appendChild(stderrPre)
+    }
+
+    block.appendChild(body)
+
+    header.addEventListener("click", function () {
+      body.classList.toggle("tool-collapsed")
+    })
+
+    return block
+  })
+
+  // ── Edit Renderer ──────────────────────────────────────────────
+  ToolRenderers.register("Edit", function (input, result, augment) {
+    var block = el("div", "tool-block")
+    var header = el("div", "tool-header")
+
+    var icon = el("span", "tool-icon", "\u270E")
+    header.appendChild(icon)
+
+    var filename = input && input.file_path ? input.file_path : (input && input.filePath ? input.filePath : "unknown")
+    var fnSpan = el("span", "tool-filename")
+    fnSpan.textContent = filename
+    header.appendChild(fnSpan)
+
+    // +N / -N badges from augment
+    if (augment) {
+      if (augment.additions != null && augment.additions > 0) {
+        var addBadge = el("span", "tool-badge tool-badge--add", "+" + augment.additions)
+        header.appendChild(addBadge)
+      }
+      if (augment.deletions != null && augment.deletions > 0) {
+        var delBadge = el("span", "tool-badge tool-badge--del", "-" + augment.deletions)
+        header.appendChild(delBadge)
+      }
+    }
+
+    header.style.cursor = "pointer"
+    block.appendChild(header)
+
+    var body = el("div", "tool-body tool-collapsed")
+
+    // Server-rendered diff HTML (pre-sanitized by Go server's escapeHTML)
+    if (augment && augment.diffHtml) {
+      var diffContainer = document.createElement("div")
+      diffContainer.setAttribute("data-server-rendered", "true")
+      // Safe: diffHtml is pre-sanitized by server-side escapeHTML()
+      diffContainer.insertAdjacentHTML("beforeend", augment.diffHtml)
+      body.appendChild(diffContainer)
+    } else if (result) {
+      var resultPre = document.createElement("pre")
+      resultPre.appendChild(document.createTextNode(typeof result === "string" ? result : JSON.stringify(result, null, 2)))
+      body.appendChild(resultPre)
+    }
+
+    block.appendChild(body)
+
+    header.addEventListener("click", function () {
+      body.classList.toggle("tool-collapsed")
+    })
+
+    return block
+  })
+
+  // ── Read Renderer ──────────────────────────────────────────────
+  ToolRenderers.register("Read", function (input, result, augment) {
+    var block = el("div", "tool-block")
+    var header = el("div", "tool-header")
+
+    var icon = el("span", "tool-icon", "\uD83D\uDCC4")
+    header.appendChild(icon)
+
+    var filename = input && input.file_path ? input.file_path : (input && input.filePath ? input.filePath : "unknown")
+    var fnSpan = el("span", "tool-filename")
+    fnSpan.textContent = filename
+    header.appendChild(fnSpan)
+
+    // Line count badge
+    var content = result && typeof result === "string" ? result : ""
+    if (content) {
+      var lines = content.split("\n").length
+      var linesBadge = el("span", "tool-badge", lines + " lines")
+      header.appendChild(linesBadge)
+    }
+
+    header.style.cursor = "pointer"
+    block.appendChild(header)
+
+    var body = el("div", "tool-body tool-collapsed")
+
+    // Server-rendered highlighted content from augment
+    if (augment && augment.highlightedHtml) {
+      var hlContainer = document.createElement("div")
+      hlContainer.setAttribute("data-server-rendered", "true")
+      // Safe: highlightedHtml is pre-sanitized by server-side escapeHTML()
+      hlContainer.insertAdjacentHTML("beforeend", augment.highlightedHtml)
+      body.appendChild(hlContainer)
+    } else if (content) {
+      var contentPre = document.createElement("pre")
+      contentPre.appendChild(document.createTextNode(content))
+      body.appendChild(contentPre)
+    }
+
+    block.appendChild(body)
+
+    header.addEventListener("click", function () {
+      body.classList.toggle("tool-collapsed")
+    })
+
+    return block
+  })
+
   // ── Terminal management ───────────────────────────────────────────
   function connectTerminal(task) {
     disconnectTerminal()
@@ -1678,29 +2244,103 @@
     var liveSession = getActiveSessionForTask(task)
     var isContainerTask = !liveSession && task.tmuxSession
 
+    var toolbar = document.getElementById("terminal-toolbar")
+
     if (!liveSession && !isContainerTask) {
       var placeholder = el("div", "terminal-placeholder", "No session attached.")
       container.appendChild(placeholder)
+      if (toolbar) toolbar.style.display = "none"
       return
     }
 
+    if (toolbar) toolbar.style.display = ""
+
+    var termFontSize = state.terminalFontSize || 14
     var term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
-      fontFamily: "var(--font-mono)",
+      cursorStyle: "bar",
+      cursorWidth: 2,
+      fontSize: termFontSize,
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'IBM Plex Mono', monospace",
+      fontWeight: "400",
+      fontWeightBold: "600",
+      lineHeight: 1.2,
+      letterSpacing: 0,
+      scrollback: 10000,
+      allowProposedApi: true,
       theme: {
         background: "#080a0e",
         foreground: "#c8d0dc",
         cursor: "#e8a932",
+        cursorAccent: "#080a0e",
+        selectionBackground: "rgba(232, 169, 50, 0.25)",
+        selectionForeground: "#ffffff",
+        black: "#1a1e2a",
+        red: "#f06060",
+        green: "#2dd4a0",
+        yellow: "#e8a932",
+        blue: "#4ca8e8",
+        magenta: "#c084fc",
+        cyan: "#22d3ee",
+        white: "#c8d0dc",
+        brightBlack: "#4a5368",
+        brightRed: "#ff7b7b",
+        brightGreen: "#5eead4",
+        brightYellow: "#fbbf24",
+        brightBlue: "#7cc4f0",
+        brightMagenta: "#d4a5ff",
+        brightCyan: "#67e8f9",
+        brightWhite: "#f0f4fc",
       },
     })
     var fitAddon = new FitAddon.FitAddon()
     term.loadAddon(fitAddon)
+
+    // Web links: make URLs clickable
+    if (typeof WebLinksAddon !== "undefined") {
+      term.loadAddon(new WebLinksAddon.WebLinksAddon())
+    }
+
     term.open(container)
+
+    // WebGL renderer: smoother rendering (falls back to canvas if unavailable)
+    if (typeof WebglAddon !== "undefined") {
+      try { term.loadAddon(new WebglAddon.WebglAddon()) } catch (e) { /* canvas fallback */ }
+    }
+
     fitAddon.fit()
 
     state.terminal = term
     state.fitAddon = fitAddon
+    updateTerminalToolbar()
+
+    // Suppress right-click from reaching tmux so only the browser context menu
+    // appears. Capture-phase intercept runs before xterm.js can forward it.
+    container.addEventListener("mousedown", function (e) {
+      if (e.button === 2) e.stopImmediatePropagation()
+    }, true)
+
+    // Auto-copy selection to clipboard. Shift+drag bypasses tmux mouse capture
+    // to create native xterm.js selections that trigger this handler.
+    term.onSelectionChange(function () {
+      var sel = term.getSelection()
+      if (sel) {
+        navigator.clipboard.writeText(sel).catch(function () {})
+      }
+    })
+
+    // Watch the container for size changes so xterm re-fits automatically.
+    if (state.terminalResizeObserver) {
+      state.terminalResizeObserver.disconnect()
+    }
+    state.terminalResizeObserver = new ResizeObserver(function () {
+      if (state.fitAddon) {
+        state.fitAddon.fit()
+        sendTerminalResize()
+        updateTerminalToolbar()
+      }
+    })
+    state.terminalResizeObserver.observe(container)
 
     if (isContainerTask) {
       // Container sessions: stream output via SSE preview endpoint
@@ -1708,6 +2348,17 @@
     } else {
       // Local sessions: connect via WebSocket for live PTY
       connectWebSocket(liveSession.id, term)
+    }
+  }
+
+  // Send current terminal dimensions to the server so the PTY matches.
+  function sendTerminalResize() {
+    if (!state.terminal || !state.terminalWs) return
+    if (state.terminalWs.readyState !== WebSocket.OPEN) return
+    var cols = state.terminal.cols
+    var rows = state.terminal.rows
+    if (cols > 0 && rows > 0) {
+      state.terminalWs.send(JSON.stringify({ type: "resize", cols: cols, rows: rows }))
     }
   }
 
@@ -1720,9 +2371,15 @@
     state.terminalWs = ws
 
     ws.binaryType = "arraybuffer"
+    ws.onopen = function () {
+      // Send initial resize so the server PTY matches the browser terminal size.
+      sendTerminalResize()
+    }
     ws.onmessage = function (e) {
       if (e.data instanceof ArrayBuffer) {
-        // Binary frames are PTY output — write to terminal
+        // Binary frames are PTY output — write directly to terminal.
+        // Mouse tracking stays enabled so scroll wheel goes to tmux (full
+        // session history). Use Shift+drag for native text selection.
         term.write(new Uint8Array(e.data))
       }
       // String frames are JSON control messages (status, error, etc.) — ignore for terminal
@@ -1754,6 +2411,11 @@
   }
 
   function disconnectTerminal() {
+    if (state.terminalFullscreen) toggleTerminalFullscreen()
+    if (state.terminalResizeObserver) {
+      state.terminalResizeObserver.disconnect()
+      state.terminalResizeObserver = null
+    }
     if (state.terminalWs) {
       state.terminalWs.close()
       state.terminalWs = null
@@ -1767,7 +2429,76 @@
       state.terminal = null
     }
     state.fitAddon = null
+    var toolbar = document.getElementById("terminal-toolbar")
+    if (toolbar) toolbar.style.display = "none"
   }
+
+  // ── Terminal toolbar ──────────────────────────────────────────────
+  function updateTerminalToolbar() {
+    var dimsEl = document.getElementById("terminal-toolbar-dims")
+    var fontEl = document.getElementById("term-font-size")
+    if (state.terminal && dimsEl) {
+      dimsEl.textContent = state.terminal.cols + "\u00D7" + state.terminal.rows
+    }
+    if (fontEl) {
+      fontEl.textContent = state.terminalFontSize + "px"
+    }
+  }
+
+  function changeTerminalFontSize(delta) {
+    var newSize = Math.max(10, Math.min(24, state.terminalFontSize + delta))
+    if (newSize === state.terminalFontSize) return
+    state.terminalFontSize = newSize
+    if (state.terminal) {
+      state.terminal.options.fontSize = newSize
+      if (state.fitAddon) {
+        state.fitAddon.fit()
+        sendTerminalResize()
+      }
+    }
+    updateTerminalToolbar()
+  }
+
+  function toggleTerminalFullscreen() {
+    var detailView = document.getElementById("detail-view")
+    var btn = document.getElementById("term-fullscreen")
+    if (!detailView) return
+    state.terminalFullscreen = !state.terminalFullscreen
+    if (state.terminalFullscreen) {
+      detailView.classList.add("terminal-fullscreen")
+      if (btn) btn.textContent = "\u2716 Close"
+    } else {
+      detailView.classList.remove("terminal-fullscreen")
+      if (btn) btn.textContent = "\u26F6 Expand"
+    }
+    if (state.fitAddon) {
+      setTimeout(function () {
+        state.fitAddon.fit()
+        sendTerminalResize()
+        updateTerminalToolbar()
+      }, 50)
+    }
+  }
+
+  // Toolbar button event listeners
+  ;(function initTerminalToolbar() {
+    var fontDown = document.getElementById("term-font-down")
+    var fontUp = document.getElementById("term-font-up")
+    var scrollBtn = document.getElementById("term-scroll-bottom")
+    var fullscreenBtn = document.getElementById("term-fullscreen")
+
+    if (fontDown) fontDown.addEventListener("click", function () { changeTerminalFontSize(-1) })
+    if (fontUp) fontUp.addEventListener("click", function () { changeTerminalFontSize(1) })
+    if (scrollBtn) scrollBtn.addEventListener("click", function () {
+      // Ask server to exit tmux copy-mode (only sends 'q' if pane is in
+      // copy-mode, preventing stray keystrokes in the application).
+      if (state.terminalWs && state.terminalWs.readyState === WebSocket.OPEN) {
+        state.terminalWs.send(JSON.stringify({ type: "scroll_bottom" }))
+      }
+      if (state.terminal) state.terminal.scrollToBottom()
+    })
+    if (fullscreenBtn) fullscreenBtn.addEventListener("click", toggleTerminalFullscreen)
+  })()
 
   // ── Phase transition ────────────────────────────────────────────────
   function handlePhaseTransition(e) {
@@ -1797,7 +2528,10 @@
 
   // ── Resize handler ────────────────────────────────────────────────
   window.addEventListener("resize", function () {
-    if (state.fitAddon) state.fitAddon.fit()
+    if (state.fitAddon) {
+      state.fitAddon.fit()
+      sendTerminalResize()
+    }
   })
 
   // ── Mobile back ───────────────────────────────────────────────────
@@ -1862,7 +2596,8 @@
 
     var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
 
-    if (state.activeView === "agents" && task && task.agentStatus !== "complete" && task.agentStatus !== "idle") {
+    var taskStatus = task ? effectiveAgentStatus(task) : "idle"
+    if (state.activeView === "agents" && task && taskStatus !== "complete" && taskStatus !== "idle") {
       return {
         mode: "reply",
         label: task.id + "/" + task.phase,
@@ -1962,7 +2697,7 @@
     if (existing) existing.remove()
 
     var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
-    if (!task || task.agentStatus !== "waiting" || !task.askQuestion) return
+    if (!task || effectiveAgentStatus(task) !== "waiting" || !task.askQuestion) return
 
     var banner = el("div", "ask-banner")
     var icon = el("span", "ask-banner-icon", "\u25D0")
@@ -2144,6 +2879,89 @@
     document.removeEventListener("click", closeModeMenu)
   }
 
+  // ── File upload ──────────────────────────────────────────────────
+  var UPLOAD_CHUNK_SIZE = 64 * 1024 // 64 KB
+
+  function uploadFile(file) {
+    if (!state.selectedTaskId) return
+    var sessionId = state.selectedTaskId
+
+    var protocol = location.protocol === "https:" ? "wss:" : "ws:"
+    var url = protocol + "//" + location.host + "/ws/upload/" + encodeURIComponent(sessionId)
+    var ws = new WebSocket(url)
+
+    var progressBar = document.getElementById("upload-progress")
+    var progressFill = document.getElementById("upload-progress-fill")
+    if (!progressBar) {
+      var chatBar = document.getElementById("chat-bar")
+      if (chatBar) {
+        progressBar = el("div", "upload-progress")
+        progressBar.id = "upload-progress"
+        progressFill = el("div", "upload-progress-fill")
+        progressFill.id = "upload-progress-fill"
+        progressBar.appendChild(progressFill)
+        chatBar.parentNode.insertBefore(progressBar, chatBar)
+      }
+    }
+    if (progressBar) progressBar.style.display = ""
+    if (progressFill) progressFill.style.width = "0%"
+
+    ws.onopen = function () {
+      ws.send(JSON.stringify({ type: "start", filename: file.name, size: file.size }))
+      sendChunks(ws, file, 0)
+    }
+
+    ws.onmessage = function (e) {
+      try {
+        var msg = JSON.parse(e.data)
+        if (msg.type === "progress" && progressFill && msg.total > 0) {
+          var pct = Math.min(100, Math.round((msg.received / msg.total) * 100))
+          progressFill.style.width = pct + "%"
+        }
+        if (msg.type === "complete") {
+          if (progressFill) progressFill.style.width = "100%"
+          setTimeout(function () {
+            if (progressBar) progressBar.style.display = "none"
+          }, 1500)
+        }
+        if (msg.type === "error") {
+          console.error("Upload error:", msg.message)
+          if (progressBar) progressBar.style.display = "none"
+        }
+      } catch (_) {}
+    }
+
+    ws.onerror = function () {
+      if (progressBar) progressBar.style.display = "none"
+    }
+  }
+
+  function sendChunks(ws, file, offset) {
+    if (offset >= file.size) {
+      ws.send(JSON.stringify({ type: "end" }))
+      return
+    }
+    var end = Math.min(offset + UPLOAD_CHUNK_SIZE, file.size)
+    var slice = file.slice(offset, end)
+    var reader = new FileReader()
+    reader.onload = function () {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(reader.result)
+        sendChunks(ws, file, end)
+      }
+    }
+    reader.onerror = function () {
+      try { ws.close() } catch (_) {}
+    }
+    reader.readAsArrayBuffer(slice)
+  }
+
+  function handleUploadFiles(files) {
+    for (var i = 0; i < files.length; i++) {
+      uploadFile(files[i])
+    }
+  }
+
   function sendChatMessage() {
     var input = document.getElementById("chat-input")
     if (!input) return
@@ -2175,6 +2993,20 @@
     })
       .then(function (r) {
         if (!r.ok) throw new Error("send failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        if (data && data.status === "delivered") {
+          // Refresh messages after a delay to pick up the sent input and any response.
+          var task = findTask(taskId)
+          var msgSessionId = getSessionIdForMessages(task)
+          if (msgSessionId) {
+            // Clear cache so reload is forced.
+            state.lastLoadedMessagesSession = null
+            setTimeout(function () { loadSessionMessages(msgSessionId) }, 1500)
+            setTimeout(function () { loadSessionMessages(msgSessionId) }, 5000)
+          }
+        }
       })
       .catch(function (err) {
         console.error("sendTaskInput:", err)
@@ -2358,6 +3190,126 @@
           if (routeSuggestion) routeSuggestion.textContent = ""
         })
     }, 300)
+  }
+
+  // ── Messages tab ────────────────────────────────────────────────
+  function loadSessionMessages(sessionId) {
+    if (!sessionId) return
+    state.lastLoadedMessagesSession = sessionId
+
+    var url = apiPathWithToken("/api/messages/" + encodeURIComponent(sessionId))
+    fetch(url, { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("messages fetch failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        var messages = data && data.messages ? data.messages : []
+        renderMessages(messages)
+      })
+      .catch(function (err) {
+        console.error("loadSessionMessages:", err)
+        var container = document.getElementById("messages-container")
+        if (container) {
+          clearChildren(container)
+          container.appendChild(el("div", "terminal-placeholder", "Failed to load messages."))
+        }
+      })
+  }
+
+  function renderMessages(messages) {
+    var container = document.getElementById("messages-container")
+    if (!container) return
+
+    clearChildren(container)
+
+    if (!messages || messages.length === 0) {
+      container.appendChild(el("div", "terminal-placeholder", "No messages yet."))
+      return
+    }
+
+    for (var i = 0; i < messages.length; i++) {
+      var msg = messages[i]
+      var role = msg.role || msg.type || "unknown"
+      var variant = role === "user" ? "--user" : "--assistant"
+      var msgBlock = el("div", "message-block message-block" + variant)
+
+      // Role label
+      var roleLabel = el("div", "message-role")
+      roleLabel.textContent = role.charAt(0).toUpperCase() + role.slice(1)
+      msgBlock.appendChild(roleLabel)
+
+      // Message content text
+      if (msg.content) {
+        var contentDiv = el("div", "message-content")
+        contentDiv.textContent = msg.content
+        msgBlock.appendChild(contentDiv)
+      }
+
+      // Tool result rendering
+      if (msg.toolName) {
+        try {
+          var toolEl = ToolRenderers.render(
+            msg.toolName,
+            msg.toolInput || null,
+            msg.toolResult || null,
+            msg.augment || null
+          )
+          msgBlock.appendChild(toolEl)
+        } catch (err) {
+          console.error("ToolRenderers.render failed for", msg.toolName, err)
+          msgBlock.appendChild(el("div", "tool-block", "[tool: " + msg.toolName + "]"))
+        }
+      }
+
+      container.appendChild(msgBlock)
+    }
+
+    // Scroll to bottom
+    container.scrollTop = container.scrollHeight
+  }
+
+  function switchDetailTab(tabName) {
+    var terminalContainer = document.getElementById("terminal-container")
+    var messagesContainer = document.getElementById("messages-container")
+    var tabs = document.querySelectorAll(".detail-tab")
+
+    for (var i = 0; i < tabs.length; i++) {
+      if (tabs[i].dataset.tab === tabName) {
+        tabs[i].classList.add("detail-tab--active")
+      } else {
+        tabs[i].classList.remove("detail-tab--active")
+      }
+    }
+
+    var toolbar = document.getElementById("terminal-toolbar")
+
+    if (tabName === "terminal") {
+      if (terminalContainer) terminalContainer.style.display = ""
+      if (messagesContainer) messagesContainer.style.display = "none"
+      if (toolbar && state.terminal) toolbar.style.display = ""
+      // Re-fit terminal when switching back and sync size with server
+      if (state.fitAddon) {
+        setTimeout(function () {
+          state.fitAddon.fit()
+          sendTerminalResize()
+          updateTerminalToolbar()
+        }, 50)
+      }
+    } else if (tabName === "messages") {
+      if (terminalContainer) terminalContainer.style.display = "none"
+      if (messagesContainer) messagesContainer.style.display = ""
+      if (toolbar) toolbar.style.display = "none"
+
+      // Load messages for the selected task (skip if already loaded for this session)
+      if (state.selectedTaskId) {
+        var task = findTask(state.selectedTaskId)
+        var msgSessionId = getSessionIdForMessages(task)
+        if (msgSessionId && msgSessionId !== state.lastLoadedMessagesSession) {
+          loadSessionMessages(msgSessionId)
+        }
+      }
+    }
   }
 
   // ── Add Project modal ────────────────────────────────────────────
@@ -2647,6 +3599,58 @@
         closeSlashPalette()
       }
     })
+    // Paste handler: detect files/images in clipboard
+    chatInput.addEventListener("paste", function (e) {
+      var items = (e.clipboardData || {}).items
+      if (!items) return
+      var files = []
+      for (var pi = 0; pi < items.length; pi++) {
+        if (items[pi].kind === "file") files.push(items[pi].getAsFile())
+      }
+      if (files.length > 0) {
+        e.preventDefault()
+        handleUploadFiles(files)
+      }
+    })
+  }
+
+  // Drag-and-drop upload on chat bar
+  var chatBarEl = document.getElementById("chat-bar")
+  if (chatBarEl) {
+    chatBarEl.addEventListener("dragover", function (e) {
+      e.preventDefault()
+      chatBarEl.classList.add("upload-dropzone")
+    })
+    chatBarEl.addEventListener("dragleave", function () {
+      chatBarEl.classList.remove("upload-dropzone")
+    })
+    chatBarEl.addEventListener("drop", function (e) {
+      e.preventDefault()
+      chatBarEl.classList.remove("upload-dropzone")
+      if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+        handleUploadFiles(e.dataTransfer.files)
+      }
+    })
+
+    // Attachment button: opens native file picker
+    var attachBtn = el("button", "chat-attach-btn")
+    attachBtn.type = "button"
+    attachBtn.setAttribute("aria-label", "Attach file")
+    attachBtn.textContent = "\uD83D\uDCCE" // paperclip emoji
+    var chatInner = chatBarEl.querySelector(".chat-bar-inner") || chatBarEl
+    var chatInput = chatInner.querySelector(".chat-input")
+    if (chatInput) chatInner.insertBefore(attachBtn, chatInput)
+    attachBtn.addEventListener("click", function () {
+      var input = document.createElement("input")
+      input.type = "file"
+      input.multiple = true
+      input.onchange = function () {
+        if (input.files && input.files.length > 0) {
+          handleUploadFiles(input.files)
+        }
+      }
+      input.click()
+    })
   }
 
   // Mobile bottom nav
@@ -2687,6 +3691,15 @@
     }
   })
 
+  // Detail tabs (Terminal / Messages)
+  var detailTabs = document.querySelectorAll(".detail-tab")
+  for (var dt = 0; dt < detailTabs.length; dt++) {
+    detailTabs[dt].addEventListener("click", function (e) {
+      var tabName = e.currentTarget.dataset.tab
+      if (tabName) switchDetailTab(tabName)
+    })
+  }
+
   // ── Init ──────────────────────────────────────────────────────────
   renderSidebar()
   renderTopBar()
@@ -2694,5 +3707,49 @@
   renderChatBar()
   fetchTasks()
   fetchProjects()
-  connectSSE()
+  fetchMenuData()
+
+  // ── ConnectionManager (WebSocket-based event bus) ───────────────
+  ;(function initConnectionManager() {
+    var wsProto = (location.protocol === "https:") ? "wss:" : "ws:"
+    var wsUrl = wsProto + "//" + location.host + "/ws/events"
+    var token = state.authToken
+    if (token) wsUrl += "?token=" + encodeURIComponent(token)
+
+    var cm = new ConnectionManager(wsUrl)
+
+    // Subscribe to session updates
+    cm.subscribe("sessions", function () {
+      fetchMenuData()
+      fetchTasks()
+    })
+
+    // Subscribe to task updates
+    cm.subscribe("tasks", function () {
+      if (typeof fetchTasks === "function") fetchTasks()
+    })
+
+    // Update connection bar on state changes
+    cm.on("stateChange", function (newState) {
+      var bar = document.getElementById("connection-bar")
+      if (!bar) return
+      bar.className = "connection-bar"
+      if (newState === "connected") {
+        bar.classList.add("connection-bar--connected")
+      } else if (newState === "reconnecting") {
+        bar.classList.add("connection-bar--reconnecting")
+      } else {
+        bar.classList.add("connection-bar--disconnected")
+      }
+    })
+
+    // Refetch data after reconnect
+    cm.on("reconnect", function () {
+      fetchMenuData()
+      fetchTasks()
+      fetchProjects()
+    })
+
+    cm.connect()
+  })()
 })()

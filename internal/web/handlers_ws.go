@@ -222,11 +222,16 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					Time:      time.Now().UTC(),
 				})
 			}
+		case "scroll_bottom":
+			if bridge == nil {
+				continue
+			}
+			_ = bridge.ExitCopyMode()
 		default:
 			_ = writer.WriteJSON(wsServerMessage{
 				Type:      "error",
 				Code:      "UNSUPPORTED_MESSAGE",
-				Message:   "supported message types: ping,input,resize",
+				Message:   "supported message types: ping,input,resize,scroll_bottom",
 				SessionID: sessionID,
 				Time:      time.Now().UTC(),
 			})

@@ -62,6 +62,8 @@ type MenuSession struct {
 	TmuxSession     string         `json:"tmuxSession,omitempty"`
 	CreatedAt       time.Time      `json:"createdAt"`
 	LastAccessedAt  time.Time      `json:"lastAccessedAt,omitempty"`
+	Tier            string         `json:"tier,omitempty"`
+	TierBadge       string         `json:"tierBadge,omitempty"`
 }
 
 type storageLoader interface {

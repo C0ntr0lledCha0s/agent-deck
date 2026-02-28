@@ -29,7 +29,13 @@ self.addEventListener("activate", (event) => {
             .map((key) => caches.delete(key)),
         ),
       )
-      .then(() => self.clients.claim()),
+      .then(() =>
+        self.clients.matchAll({ type: "window" }).then((existing) => {
+          if (existing.length === 0) {
+            return self.clients.claim()
+          }
+        }),
+      ),
   )
 })
 
@@ -77,6 +83,20 @@ self.addEventListener("push", (event) => {
     }
   }
 
+  // Handle dismiss: close matching notifications and return early.
+  if (payload.type === "dismiss") {
+    event.waitUntil(
+      self.registration.getNotifications().then((notifications) => {
+        for (const n of notifications) {
+          if (payload.tag && n.tag && n.tag.startsWith(payload.tag)) {
+            n.close()
+          }
+        }
+      }),
+    )
+    return
+  }
+
   const title = payload.title || "Agent Deck"
   const options = {
     body: payload.body || "Session update received.",
@@ -93,7 +113,22 @@ self.addEventListener("push", (event) => {
     },
   }
 
-  event.waitUntil(self.registration.showNotification(title, options))
+  // Suppress notification if user is already viewing this session.
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: false })
+      .then((allClients) => {
+        const sessionId = payload.sessionId || ""
+        if (sessionId) {
+          for (const client of allClients) {
+            if (client.focused && client.url && client.url.includes(sessionId)) {
+              return // suppress — user is viewing this session
+            }
+          }
+        }
+        return self.registration.showNotification(title, options)
+      }),
+  )
 })
 
 self.addEventListener("notificationclick", (event) => {

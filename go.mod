@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/SherClockHolmes/webpush-go v1.4.0
+	github.com/alecthomas/chroma/v2 v2.23.1
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -15,6 +16,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/muesli/termenv v0.16.0
 	github.com/sahilm/fuzzy v0.1.1
+	github.com/sergi/go-diff v1.4.0
 	github.com/stretchr/testify v1.11.1
 	github.com/thiagokokada/dark-mode-go v0.0.2
 	golang.org/x/sync v0.19.0
@@ -38,6 +40,7 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
