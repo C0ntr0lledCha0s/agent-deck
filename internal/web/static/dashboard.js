@@ -3548,9 +3548,108 @@
     container.scrollTop = container.scrollHeight
   }
 
+  // ── Analytics tab ──────────────────────────────────────────────
+  var analyticsTimer = null
+
+  function loadAnalytics(taskId) {
+    if (analyticsTimer) clearInterval(analyticsTimer)
+
+    fetchAnalyticsOnce(taskId)
+    analyticsTimer = setInterval(function () {
+      var activeTab = document.querySelector(".detail-tab--active")
+      if (activeTab && activeTab.dataset.tab === "analytics") {
+        fetchAnalyticsOnce(taskId)
+      } else {
+        clearInterval(analyticsTimer)
+        analyticsTimer = null
+      }
+    }, 5000)
+  }
+
+  function fetchAnalyticsOnce(taskId) {
+    fetch(apiPathWithToken("/api/tasks/" + taskId + "/analytics"), { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("analytics fetch failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        renderAnalytics(data.analytics || {})
+      })
+      .catch(function (err) {
+        console.error("analytics:", err)
+        renderAnalytics(null)
+      })
+  }
+
+  function renderAnalytics(data) {
+    var container = document.getElementById("analytics-container")
+    if (!container) return
+    clearChildren(container)
+
+    if (!data || (data.inputTokens === 0 && data.outputTokens === 0)) {
+      container.appendChild(el("div", "analytics-empty", "No analytics data available yet."))
+      return
+    }
+
+    // Context usage bar
+    var ctxSection = el("div", "analytics-section")
+    ctxSection.appendChild(el("div", "analytics-label", "Context Usage"))
+    var barOuter = el("div", "context-bar-outer")
+    var barFill = el("div", "context-bar-fill")
+    barFill.style.width = Math.min(data.contextPercent || 0, 100) + "%"
+    barOuter.appendChild(barFill)
+    ctxSection.appendChild(barOuter)
+    ctxSection.appendChild(el("div", "analytics-sublabel",
+      "Input: " + formatNumber(data.inputTokens) + " tokens  Output: " + formatNumber(data.outputTokens)))
+    container.appendChild(ctxSection)
+
+    // Metrics grid
+    var grid = el("div", "analytics-grid")
+    grid.appendChild(metricCard("Tool Calls", (data.toolCalls || []).reduce(function (s, t) { return s + t.count }, 0)))
+    grid.appendChild(metricCard("Cost", "$" + (data.estimatedCost || 0).toFixed(2)))
+    grid.appendChild(metricCard("Duration", formatDuration(null, data.durationSeconds)))
+    grid.appendChild(metricCard("Turns", data.totalTurns || 0))
+    grid.appendChild(metricCard("Cache Read", formatNumber(data.cacheReadTokens || 0)))
+    grid.appendChild(metricCard("Cache Write", formatNumber(data.cacheWriteTokens || 0)))
+    container.appendChild(grid)
+
+    // Tool usage breakdown
+    var tools = data.toolCalls || []
+    if (tools.length > 0) {
+      var toolSection = el("div", "analytics-section")
+      toolSection.appendChild(el("div", "analytics-label", "Tool Usage"))
+      var maxCount = tools.reduce(function (m, t) { return Math.max(m, t.count) }, 1)
+      for (var i = 0; i < tools.length; i++) {
+        var row = el("div", "tool-bar-row")
+        row.appendChild(el("span", "tool-bar-name", tools[i].name))
+        var barW = el("div", "tool-bar-wrapper")
+        var bar = el("div", "tool-bar-fill")
+        bar.style.width = ((tools[i].count / maxCount) * 100) + "%"
+        barW.appendChild(bar)
+        row.appendChild(barW)
+        row.appendChild(el("span", "tool-bar-count", tools[i].count.toString()))
+        toolSection.appendChild(row)
+      }
+      container.appendChild(toolSection)
+    }
+  }
+
+  function metricCard(label, value) {
+    var card = el("div", "metric-card")
+    card.appendChild(el("div", "metric-value", String(value)))
+    card.appendChild(el("div", "metric-label", label))
+    return card
+  }
+
+  function formatNumber(n) {
+    if (n >= 1000) return (n / 1000).toFixed(1) + "k"
+    return String(n)
+  }
+
   function switchDetailTab(tabName) {
     var terminalContainer = document.getElementById("terminal-container")
     var messagesContainer = document.getElementById("messages-container")
+    var analyticsContainer = document.getElementById("analytics-container")
     var tabs = document.querySelectorAll(".detail-tab")
 
     for (var i = 0; i < tabs.length; i++) {
@@ -3566,8 +3665,8 @@
     if (tabName === "terminal") {
       if (terminalContainer) terminalContainer.style.display = ""
       if (messagesContainer) messagesContainer.style.display = "none"
+      if (analyticsContainer) analyticsContainer.style.display = "none"
       if (toolbar && state.terminal) toolbar.style.display = ""
-      // Re-fit terminal when switching back and sync size with server
       if (state.fitAddon) {
         setTimeout(function () {
           state.fitAddon.fit()
@@ -3578,9 +3677,9 @@
     } else if (tabName === "messages") {
       if (terminalContainer) terminalContainer.style.display = "none"
       if (messagesContainer) messagesContainer.style.display = ""
+      if (analyticsContainer) analyticsContainer.style.display = "none"
       if (toolbar) toolbar.style.display = "none"
 
-      // Load messages for the selected task (skip if already loaded for this session)
       if (state.selectedTaskId) {
         var task = findTask(state.selectedTaskId)
         var msgSessionId = getSessionIdForMessages(task)
@@ -3588,6 +3687,12 @@
           loadSessionMessages(msgSessionId)
         }
       }
+    } else if (tabName === "analytics") {
+      if (terminalContainer) terminalContainer.style.display = "none"
+      if (messagesContainer) messagesContainer.style.display = "none"
+      if (analyticsContainer) analyticsContainer.style.display = ""
+      if (toolbar) toolbar.style.display = "none"
+      if (state.selectedTaskId) loadAnalytics(state.selectedTaskId)
     }
   }
 
