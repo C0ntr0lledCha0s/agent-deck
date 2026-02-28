@@ -9,6 +9,7 @@
     activeView: "agents",
     projectFilter: "",
     searchQuery: "",
+    statusFilters: [],
     authToken: readAuthTokenFromURL(),
     terminal: null,
     terminalWs: null,
@@ -1405,6 +1406,30 @@
     addBtn.title = "Add Project"
     addBtn.addEventListener("click", openAddProjectModal)
     filterBar.appendChild(addBtn)
+
+    // Status filter row
+    var statusRow = el("div", "status-filter-row")
+    var statuses = [
+      { key: "running",  icon: "\u25CF", label: "Running",  color: "var(--blue)" },
+      { key: "waiting",  icon: "\u25D0", label: "Waiting",  color: "var(--orange)" },
+      { key: "idle",     icon: "\u25CB", label: "Idle",     color: "var(--text-dim)" },
+      { key: "error",    icon: "\u2715", label: "Error",    color: "var(--red)" },
+    ]
+
+    for (var si = 0; si < statuses.length; si++) {
+      var s = statuses[si]
+      var isActive = state.statusFilters.indexOf(s.key) !== -1
+      var sPill = el("button", "filter-pill status-pill" + (isActive ? " filter-pill--active" : ""))
+      sPill.dataset.status = s.key
+      var sIcon = el("span", null, s.icon)
+      sIcon.style.color = s.color
+      sPill.appendChild(sIcon)
+      sPill.appendChild(document.createTextNode(" " + s.label))
+      sPill.addEventListener("click", handleStatusFilterClick)
+      statusRow.appendChild(sPill)
+    }
+
+    filterBar.appendChild(statusRow)
   }
 
   function handleFilterClick(e) {
@@ -1413,6 +1438,18 @@
     renderFilterBar()
     renderTaskList()
     renderChatBar()
+  }
+
+  function handleStatusFilterClick(e) {
+    var status = e.currentTarget.dataset.status
+    var idx = state.statusFilters.indexOf(status)
+    if (idx === -1) {
+      state.statusFilters.push(status)
+    } else {
+      state.statusFilters.splice(idx, 1)
+    }
+    renderFilterBar()
+    renderTaskList()
   }
 
   // ── Tier definitions ──────────────────────────────────────────────
@@ -1464,6 +1501,11 @@
     // Filter tasks
     var visible = state.tasks.filter(function (t) {
       if (state.projectFilter && t.project !== state.projectFilter) return false
+      if (state.statusFilters.length > 0) {
+        var agentSt = effectiveAgentStatus(t)
+        if (agentSt === "thinking") agentSt = "running"
+        if (state.statusFilters.indexOf(agentSt) === -1) return false
+      }
       if (state.searchQuery) {
         var q = state.searchQuery
         // Magic prefix shortcuts

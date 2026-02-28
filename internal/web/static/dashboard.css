@@ -362,6 +362,19 @@
   font-weight: 600;
 }
 
+.status-filter-row {
+  display: flex;
+  gap: 4px;
+  padding-top: 4px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.status-pill {
+  font-size: 0.75rem;
+  padding: 2px 6px;
+}
+
 /* ── Task list ─────────────────────────────────────────────────── */
 
 .task-list {
