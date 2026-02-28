@@ -17,6 +17,8 @@
   --orange: #f59e0b;
   --term-bg: #080a0e;
   --term-text: #c8d0dc;
+  --bg-user-message: #484848;
+  --thinking-color: #d97706;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'IBM Plex Mono', monospace;
   --font-sans: 'IBM Plex Sans', -apple-system, sans-serif;
   --topbar-height: 48px;

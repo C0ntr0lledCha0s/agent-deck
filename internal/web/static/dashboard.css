@@ -1608,39 +1608,136 @@
   background: var(--bg);
 }
 
-/* ── Message blocks ───────────────────────────────────────────── */
+/* ── User prompt bubble (YepAnywhere-aligned) ─────────────────── */
 
-.message-block {
-  margin-bottom: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
+.user-prompt-container {
+  margin-bottom: 16px;
 }
 
-.message-block--user {
-  border-left: 3px solid var(--blue);
-}
-
-.message-block--assistant {
-  border-left: 3px solid var(--accent);
-}
-
-.message-role {
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  margin-bottom: 6px;
+.message-user-prompt {
+  background: var(--bg-user-message);
+  border-radius: 6px;
+  width: fit-content;
+  max-width: 80%;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--text);
 }
 
 .message-content {
   font-size: 0.88rem;
   color: var(--text);
   line-height: 1.5;
+}
+
+/* ── Assistant turn (YepAnywhere-aligned) ─────────────────────── */
+
+.assistant-turn {
+  position: relative;
+  padding-left: 24px;
+  margin-bottom: 16px;
+}
+
+/* ── Text blocks ──────────────────────────────────────────────── */
+
+.text-block {
+  font-size: 0.88rem;
+  color: var(--text);
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+  margin-bottom: 4px;
+}
+
+/* ── Collapsible text ─────────────────────────────────────────── */
+
+.collapsible-text .truncated-content {
+  position: relative;
+  overflow: hidden;
+}
+
+.collapsible-text .fade-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(transparent, var(--bg-user-message));
+  pointer-events: none;
+}
+
+.assistant-turn .collapsible-text .fade-overlay {
+  background: linear-gradient(transparent, var(--bg));
+}
+
+.show-more-btn {
+  display: inline-block;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.78rem;
+  cursor: pointer;
+  padding: 4px 0;
+  margin-top: 2px;
+}
+
+.show-more-btn:hover {
+  text-decoration: underline;
+}
+
+/* ── Thinking blocks ──────────────────────────────────────────── */
+
+.thinking-block.collapsible {
+  margin: 4px 0;
+}
+
+.collapsible__summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.collapsible__summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible__icon {
+  display: inline-block;
+  transition: transform 150ms ease;
+  font-size: 0.7rem;
+}
+
+details[open] > .collapsible__summary .collapsible__icon {
+  transform: rotate(90deg);
+}
+
+.thinking-content {
+  color: var(--thinking-color);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 4px 0 4px 16px;
+  border-left: 2px solid var(--thinking-color);
+  margin: 4px 0;
+  opacity: 0.85;
+}
+
+/* ── Messages empty state ─────────────────────────────────────── */
+
+.messages-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+  font-size: 0.88rem;
 }
 
 /* ── Tool blocks ──────────────────────────────────────────────── */
