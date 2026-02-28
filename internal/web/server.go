@@ -56,6 +56,11 @@ type Server struct {
 
 	eventBus *eventbus.EventBus
 	eventHub *eventbus.Hub
+
+	// claudeProjectsDir overrides the default ~/.claude/projects base
+	// directory for locating Claude Code conversation JSONL files.
+	// Empty means use the default.
+	claudeProjectsDir string
 }
 
 // NewServer creates a new web server with base routes and middleware.

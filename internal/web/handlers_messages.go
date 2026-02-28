@@ -96,7 +96,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Locate the Claude Code session directory for this project.
-	sessionDir := findClaudeSessionDir(projectPath)
+	sessionDir := s.findClaudeSessionDir(projectPath)
 	if sessionDir == "" {
 		writeJSON(w, http.StatusOK, messagesResponse{
 			SessionID: sessionID,
@@ -158,16 +158,21 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 // Note: no fallback scan is performed because the encoding is lossy
 // (dashes in path component names are indistinguishable from separators),
 // so decoding would produce false matches for paths containing hyphens.
-func findClaudeSessionDir(projectPath string) string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+//
+// If s.claudeProjectsDir is set, it is used as the base directory instead
+// of the default ~/.claude/projects.
+func (s *Server) findClaudeSessionDir(projectPath string) string {
+	baseDir := s.claudeProjectsDir
+	if baseDir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		baseDir = filepath.Join(homeDir, ".claude", "projects")
 	}
 
-	claudeProjectsDir := filepath.Join(homeDir, ".claude", "projects")
-
 	encoded := encodeProjectPath(projectPath)
-	candidate := filepath.Join(claudeProjectsDir, encoded)
+	candidate := filepath.Join(baseDir, encoded)
 	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 		return candidate
 	}
