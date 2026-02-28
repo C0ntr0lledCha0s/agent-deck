@@ -375,6 +375,19 @@
   padding: 2px 6px;
 }
 
+.view-mode-select {
+  margin-left: auto;
+  padding: 3px 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 /* ── Task list ─────────────────────────────────────────────────── */
 
 .task-list {

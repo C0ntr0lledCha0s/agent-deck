@@ -10,6 +10,7 @@
     projectFilter: "",
     searchQuery: "",
     statusFilters: [],
+    viewMode: "tier",
     authToken: readAuthTokenFromURL(),
     terminal: null,
     terminalWs: null,
@@ -1429,6 +1430,25 @@
       statusRow.appendChild(sPill)
     }
 
+    // View mode selector
+    var viewSelect = el("select", "view-mode-select")
+    var modes = [
+      { key: "tier", label: "Group: Tier" },
+      { key: "project", label: "Group: Project" },
+      { key: "status", label: "Group: Status" },
+    ]
+    for (var mi = 0; mi < modes.length; mi++) {
+      var opt = el("option", null, modes[mi].label)
+      opt.value = modes[mi].key
+      if (modes[mi].key === state.viewMode) opt.selected = true
+      viewSelect.appendChild(opt)
+    }
+    viewSelect.addEventListener("change", function () {
+      state.viewMode = this.value
+      renderTaskList()
+    })
+    statusRow.appendChild(viewSelect)
+
     filterBar.appendChild(statusRow)
   }
 
@@ -1543,11 +1563,24 @@
 
     if (emptyEl) emptyEl.style.display = "none"
 
-    // Assign tiers to each task
+    // Assign tiers to each task (needed for tier view and card coloring)
     for (var j = 0; j < visible.length; j++) {
       assignTaskTier(visible[j])
     }
 
+    if (state.viewMode === "project") {
+      renderGroupedSections(visible, function (t) { return t.project || "No Project" }, taskList)
+    } else if (state.viewMode === "status") {
+      renderGroupedSections(visible, function (t) {
+        var s = effectiveAgentStatus(t)
+        return s.charAt(0).toUpperCase() + s.slice(1)
+      }, taskList)
+    } else {
+      renderTierSections(visible, taskList)
+    }
+  }
+
+  function renderTierSections(visible, taskList) {
     // Group by tier
     var tierBuckets = {}
     for (var td = 0; td < TIER_DEFS.length; td++) {
@@ -1607,6 +1640,47 @@
         section.appendChild(createAgentCard(bucket[c]))
       }
 
+      taskList.appendChild(section)
+    }
+  }
+
+  function renderGroupedSections(visible, groupFn, taskList) {
+    var groups = {}
+    var groupOrder = []
+    for (var i = 0; i < visible.length; i++) {
+      var key = groupFn(visible[i])
+      if (!groups[key]) {
+        groups[key] = []
+        groupOrder.push(key)
+      }
+      groups[key].push(visible[i])
+    }
+
+    for (var g = 0; g < groupOrder.length; g++) {
+      var gKey = groupOrder[g]
+      var gBucket = groups[gKey]
+
+      var section = el("div", "tier-section")
+      section.dataset.tier = gKey
+
+      var header = el("div", "tier-header")
+      header.appendChild(el("span", null, gKey))
+      header.appendChild(el("span", "tier-badge", gBucket.length.toString()))
+      header.style.cursor = "pointer"
+
+      var isCollapsed = !!tierCollapsed[gKey]
+      if (isCollapsed) section.classList.add("tier-collapsed")
+      ;(function (sectionEl, k) {
+        header.addEventListener("click", function () {
+          tierCollapsed[k] = !tierCollapsed[k]
+          sectionEl.classList.toggle("tier-collapsed")
+        })
+      })(section, gKey)
+
+      section.appendChild(header)
+      for (var c = 0; c < gBucket.length; c++) {
+        section.appendChild(createAgentCard(gBucket[c]))
+      }
       taskList.appendChild(section)
     }
   }
