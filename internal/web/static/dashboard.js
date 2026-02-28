@@ -1847,13 +1847,155 @@
       .catch(function (err) { console.error("rename:", err) })
   }
 
-  // Stub functions for Fork and Send-To (implemented in later tasks)
+  // ── Fork modal ──────────────────────────────────────────────────
+  var forkSourceTask = null
+
   function openForkModal(task) {
-    console.log("Fork:", task.id)
+    forkSourceTask = task
+    var modal = document.getElementById("fork-task-modal")
+    var backdrop = document.getElementById("fork-task-backdrop")
+    var source = document.getElementById("fork-source")
+    var title = document.getElementById("fork-title")
+    var project = document.getElementById("fork-project")
+
+    if (source) source.textContent = task.description || task.id
+    if (title) title.value = (task.description || "") + " (fork)"
+
+    if (project) {
+      clearChildren(project)
+      for (var i = 0; i < state.projects.length; i++) {
+        var opt = el("option", null, state.projects[i].name)
+        opt.value = state.projects[i].name
+        if (state.projects[i].name === task.project) opt.selected = true
+        project.appendChild(opt)
+      }
+    }
+
+    if (modal) modal.classList.add("open")
+    if (backdrop) backdrop.classList.add("open")
+    if (modal) modal.setAttribute("aria-hidden", "false")
+    if (title) title.focus()
   }
 
+  function closeForkModal() {
+    var modal = document.getElementById("fork-task-modal")
+    var backdrop = document.getElementById("fork-task-backdrop")
+    if (modal) modal.classList.remove("open")
+    if (backdrop) backdrop.classList.remove("open")
+    if (modal) modal.setAttribute("aria-hidden", "true")
+    forkSourceTask = null
+  }
+
+  function submitFork() {
+    if (!forkSourceTask) return
+    var title = document.getElementById("fork-title")
+    var desc = title ? title.value.trim() : ""
+    if (!desc) return
+
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+    fetch(apiPathWithToken("/api/tasks/" + forkSourceTask.id + "/fork"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ description: desc }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("fork failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        closeForkModal()
+        fetchTasks()
+        if (data.task && data.task.id) selectTask(data.task.id)
+      })
+      .catch(function (err) {
+        console.error("fork:", err)
+        var status = document.getElementById("fork-status")
+        if (status) status.textContent = "Fork failed: " + err.message
+      })
+  }
+
+  // ── Send-To modal ──────────────────────────────────────────────
+  var sendToSourceTask = null
+  var sendToTargetId = null
+
   function openSendToModal(task) {
-    console.log("Send to:", task.id)
+    sendToSourceTask = task
+    sendToTargetId = null
+    var modal = document.getElementById("send-to-modal")
+    var backdrop = document.getElementById("send-to-backdrop")
+    var search = document.getElementById("send-to-search")
+
+    if (search) search.value = ""
+    renderSendToList("")
+    var submitBtn = document.getElementById("send-to-submit")
+    if (submitBtn) submitBtn.disabled = true
+
+    if (modal) modal.classList.add("open")
+    if (backdrop) backdrop.classList.add("open")
+    if (modal) modal.setAttribute("aria-hidden", "false")
+    if (search) search.focus()
+  }
+
+  function renderSendToList(query) {
+    var list = document.getElementById("send-to-list")
+    if (!list) return
+    clearChildren(list)
+
+    var q = query.toLowerCase()
+    for (var i = 0; i < state.tasks.length; i++) {
+      var t = state.tasks[i]
+      if (sendToSourceTask && t.id === sendToSourceTask.id) continue
+      if (q && (t.description + " " + t.project + " " + t.id).toLowerCase().indexOf(q) === -1) continue
+
+      var row = el("button", "send-to-item" + (sendToTargetId === t.id ? " send-to-item--selected" : ""))
+      var sts = effectiveAgentStatus(t)
+      var meta = AGENT_STATUS_META[sts] || AGENT_STATUS_META.idle
+      var dot = el("span", null, meta.icon)
+      dot.style.color = meta.color
+      row.appendChild(dot)
+      row.appendChild(document.createTextNode(" " + (t.project || "") + " / " + t.id + "  " + meta.label))
+      ;(function (id) {
+        row.addEventListener("click", function () {
+          sendToTargetId = id
+          renderSendToList(document.getElementById("send-to-search").value)
+          var btn = document.getElementById("send-to-submit")
+          if (btn) btn.disabled = false
+        })
+      })(t.id)
+      list.appendChild(row)
+    }
+  }
+
+  function closeSendToModal() {
+    var modal = document.getElementById("send-to-modal")
+    var backdrop = document.getElementById("send-to-backdrop")
+    if (modal) modal.classList.remove("open")
+    if (backdrop) backdrop.classList.remove("open")
+    if (modal) modal.setAttribute("aria-hidden", "true")
+    sendToSourceTask = null
+    sendToTargetId = null
+  }
+
+  function submitSendTo() {
+    if (!sendToSourceTask || !sendToTargetId) return
+    var input = "Output from " + sendToSourceTask.id + ": " + (sendToSourceTask.description || "")
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+    fetch(apiPathWithToken("/api/tasks/" + sendToTargetId + "/input"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ input: input }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("send failed: " + r.status)
+        closeSendToModal()
+      })
+      .catch(function (err) {
+        console.error("send:", err)
+        var sts = document.getElementById("send-to-status")
+        if (sts) sts.textContent = "Send failed: " + err.message
+      })
   }
 
   // ── Agent status badge ────────────────────────────────────────────
@@ -4090,6 +4232,32 @@
     searchInput.addEventListener("input", function () {
       state.searchQuery = this.value.trim().toLowerCase()
       renderTaskList()
+    })
+  }
+
+  // ── Fork modal listeners ────────────────────────────────────────
+  var forkClose = document.getElementById("fork-task-close")
+  var forkBackdrop = document.getElementById("fork-task-backdrop")
+  var forkCancel = document.getElementById("fork-cancel")
+  var forkSubmit = document.getElementById("fork-submit")
+  if (forkClose) forkClose.addEventListener("click", closeForkModal)
+  if (forkBackdrop) forkBackdrop.addEventListener("click", closeForkModal)
+  if (forkCancel) forkCancel.addEventListener("click", closeForkModal)
+  if (forkSubmit) forkSubmit.addEventListener("click", submitFork)
+
+  // ── Send-To modal listeners ────────────────────────────────────
+  var sendToClose = document.getElementById("send-to-close")
+  var sendToBackdrop = document.getElementById("send-to-backdrop")
+  var sendToCancel = document.getElementById("send-to-cancel")
+  var sendToSubmitBtn = document.getElementById("send-to-submit")
+  var sendToSearch = document.getElementById("send-to-search")
+  if (sendToClose) sendToClose.addEventListener("click", closeSendToModal)
+  if (sendToBackdrop) sendToBackdrop.addEventListener("click", closeSendToModal)
+  if (sendToCancel) sendToCancel.addEventListener("click", closeSendToModal)
+  if (sendToSubmitBtn) sendToSubmitBtn.addEventListener("click", submitSendTo)
+  if (sendToSearch) {
+    sendToSearch.addEventListener("input", function () {
+      renderSendToList(this.value)
     })
   }
 
