@@ -388,6 +388,74 @@
   flex-shrink: 0;
 }
 
+/* ── Context menu ──────────────────────────────────────────────── */
+
+.kebab-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 1rem;
+  line-height: 1;
+  border-radius: 3px;
+  transition: background 100ms;
+}
+
+.kebab-btn:hover {
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+.context-menu {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 0;
+  min-width: 140px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  z-index: 1000;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.context-menu-item:hover {
+  background: var(--bg-card);
+}
+
+.context-menu-item--danger {
+  color: var(--red);
+}
+
+.context-menu-item--danger:hover {
+  background: rgba(255,50,50,0.1);
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.context-menu-icon {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
 /* ── Task list ─────────────────────────────────────────────────── */
 
 .task-list {

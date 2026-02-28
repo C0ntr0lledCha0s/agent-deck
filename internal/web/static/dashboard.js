@@ -1707,6 +1707,19 @@
       topRight.appendChild(el("span", "ask-badge", "\u25D0 INPUT"))
     }
     topRight.appendChild(createAgentStatusBadge(cardStatus))
+
+    // Kebab menu button
+    var kebab = el("button", "kebab-btn", "\u22EE")
+    kebab.title = "Actions"
+    kebab.setAttribute("aria-label", "Task actions")
+    ;(function (t, btn) {
+      kebab.addEventListener("click", function (e) {
+        e.stopPropagation()
+        toggleContextMenu(t, btn)
+      })
+    })(task, kebab)
+    topRight.appendChild(kebab)
+
     top.appendChild(topRight)
     card.appendChild(top)
 
@@ -1735,6 +1748,112 @@
     })
 
     return card
+  }
+
+  // ── Context menu ──────────────────────────────────────────────────
+  function toggleContextMenu(task, anchor) {
+    closeContextMenu()
+
+    var menu = el("div", "context-menu")
+    menu.id = "context-menu"
+
+    var items = [
+      { icon: "\u21BB", label: "Restart", action: function () { restartTask(task.id) } },
+      { icon: "\u2442", label: "Fork", action: function () { openForkModal(task) } },
+      { icon: "\u270E", label: "Rename", action: function () { startInlineRename(task) } },
+      { icon: "\u2197", label: "Send to\u2026", action: function () { openSendToModal(task) } },
+      { icon: "\u2015", label: "divider" },
+      { icon: "\u2715", label: "Delete", action: function () { confirmDeleteTask(task.id) }, danger: true },
+    ]
+
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i]
+      if (item.label === "divider") {
+        menu.appendChild(el("div", "context-menu-divider"))
+        continue
+      }
+      var row = el("button", "context-menu-item" + (item.danger ? " context-menu-item--danger" : ""))
+      row.appendChild(el("span", "context-menu-icon", item.icon))
+      row.appendChild(document.createTextNode(" " + item.label))
+      ;(function (action) {
+        row.addEventListener("click", function (e) {
+          e.stopPropagation()
+          closeContextMenu()
+          action()
+        })
+      })(item.action)
+      menu.appendChild(row)
+    }
+
+    // Position relative to anchor
+    var rect = anchor.getBoundingClientRect()
+    menu.style.position = "fixed"
+    menu.style.top = rect.bottom + "px"
+    menu.style.left = (rect.left - 120) + "px"
+    document.body.appendChild(menu)
+
+    // Close on outside click
+    setTimeout(function () {
+      document.addEventListener("click", closeContextMenu, { once: true })
+    }, 0)
+  }
+
+  function closeContextMenu() {
+    var existing = document.getElementById("context-menu")
+    if (existing) existing.remove()
+  }
+
+  // ── Task action functions ─────────────────────────────────────────
+  function restartTask(taskId) {
+    var headers = authHeaders()
+    fetch(apiPathWithToken("/api/tasks/" + taskId + "/restart"), {
+      method: "POST",
+      headers: headers,
+    })
+      .then(function (r) { return r.json() })
+      .then(function () { fetchTasks() })
+      .catch(function (err) { console.error("restart:", err) })
+  }
+
+  function confirmDeleteTask(taskId) {
+    if (!confirm("Delete this task? This cannot be undone.")) return
+    var headers = authHeaders()
+    fetch(apiPathWithToken("/api/tasks/" + taskId), {
+      method: "DELETE",
+      headers: headers,
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("delete failed: " + r.status)
+        if (state.selectedTaskId === taskId) state.selectedTaskId = null
+        fetchTasks()
+      })
+      .catch(function (err) { console.error("delete:", err) })
+  }
+
+  function startInlineRename(task) {
+    var newDesc = prompt("Rename task:", task.description)
+    if (newDesc === null || newDesc === task.description) return
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+    fetch(apiPathWithToken("/api/tasks/" + task.id), {
+      method: "PATCH",
+      headers: headers,
+      body: JSON.stringify({ description: newDesc }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("rename failed: " + r.status)
+        fetchTasks()
+      })
+      .catch(function (err) { console.error("rename:", err) })
+  }
+
+  // Stub functions for Fork and Send-To (implemented in later tasks)
+  function openForkModal(task) {
+    console.log("Fork:", task.id)
+  }
+
+  function openSendToModal(task) {
+    console.log("Send to:", task.id)
   }
 
   // ── Agent status badge ────────────────────────────────────────────
