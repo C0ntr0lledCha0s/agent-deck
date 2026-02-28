@@ -59,6 +59,21 @@
     return null
   }
 
+  // Return the session.Instance ID to use for the messages API.
+  // Prefers the active hub session's claudeSessionId; falls back to
+  // task.tmuxSession for container-backed tasks.
+  function getSessionIdForMessages(task) {
+    if (!task) return null
+    if (task.sessions) {
+      for (var i = task.sessions.length - 1; i >= 0; i--) {
+        if (task.sessions[i].status === "active" && task.sessions[i].claudeSessionId) {
+          return task.sessions[i].claudeSessionId
+        }
+      }
+    }
+    return task.tmuxSession || null
+  }
+
   function mapSessionStatus(sessionStatus) {
     switch (sessionStatus) {
       case "running": return "running"
@@ -139,6 +154,30 @@
         console.error("fetchProjects:", err)
         state.projects = []
         renderFilterBar()
+      })
+  }
+
+  // Fetch menu snapshot and populate sessionMap so live terminal
+  // connections and messages can resolve session.Instance IDs to
+  // their tmux session names and project paths.
+  function fetchMenuData() {
+    return fetch(apiPathWithToken("/api/menu"), { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("menu fetch failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        var items = data && data.items ? data.items : []
+        var map = {}
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].type === "session" && items[i].session) {
+            map[items[i].session.id] = items[i].session
+          }
+        }
+        state.sessionMap = map
+      })
+      .catch(function (err) {
+        console.error("fetchMenuData:", err)
       })
   }
 
@@ -3041,8 +3080,9 @@
       // Load messages for the selected task (skip if already loaded for this session)
       if (state.selectedTaskId) {
         var task = findTask(state.selectedTaskId)
-        if (task && task.tmuxSession && task.tmuxSession !== state.lastLoadedMessagesSession) {
-          loadSessionMessages(task.tmuxSession)
+        var msgSessionId = getSessionIdForMessages(task)
+        if (msgSessionId && msgSessionId !== state.lastLoadedMessagesSession) {
+          loadSessionMessages(msgSessionId)
         }
       }
     }
@@ -3443,6 +3483,7 @@
   renderChatBar()
   fetchTasks()
   fetchProjects()
+  fetchMenuData()
 
   // ── ConnectionManager (WebSocket-based event bus) ───────────────
   ;(function initConnectionManager() {
@@ -3455,9 +3496,8 @@
 
     // Subscribe to session updates
     cm.subscribe("sessions", function () {
-      // fetchMenuData will be added in a future task; fall back to fetchTasks
-      if (typeof fetchMenuData === "function") fetchMenuData()
-      else fetchTasks()
+      fetchMenuData()
+      fetchTasks()
     })
 
     // Subscribe to task updates
@@ -3481,6 +3521,7 @@
 
     // Refetch data after reconnect
     cm.on("reconnect", function () {
+      fetchMenuData()
       fetchTasks()
       fetchProjects()
     })

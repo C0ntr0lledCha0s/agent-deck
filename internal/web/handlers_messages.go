@@ -182,7 +182,7 @@ func (s *Server) findClaudeSessionDir(projectPath string) string {
 
 // encodeProjectPath converts a filesystem path to Claude Code's dash-separated
 // directory encoding. The absolute path has its leading "/" removed, all
-// remaining "/" replaced with "-", and is prepended with "-".
+// remaining "/" and "." replaced with "-", and is prepended with "-".
 //
 // This encoding is lossy: paths containing literal hyphens in directory names
 // produce the same encoding as paths with "/" separators in those positions.
@@ -190,9 +190,12 @@ func (s *Server) findClaudeSessionDir(projectPath string) string {
 // -home-user-my-project. This matches Claude Code's own encoding, so the
 // fast-path os.Stat lookup will find the correct directory.
 //
-// Example: /home/user/myproject -> -home-user-myproject
+// Example: /home/user/myproject       -> -home-user-myproject
+// Example: /home/user/.worktrees/feat -> -home-user--worktrees-feat
 func encodeProjectPath(path string) string {
 	path = filepath.Clean(path)
 	trimmed := strings.TrimPrefix(path, "/")
-	return "-" + strings.ReplaceAll(trimmed, "/", "-")
+	encoded := strings.ReplaceAll(trimmed, "/", "-")
+	encoded = strings.ReplaceAll(encoded, ".", "-")
+	return "-" + encoded
 }
