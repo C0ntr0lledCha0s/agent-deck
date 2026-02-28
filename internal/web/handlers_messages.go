@@ -1,9 +1,11 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -72,6 +74,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var projectPath string
+	var tmuxSession string
 	found := false
 	for _, item := range snapshot.Items {
 		if item.Type != MenuItemTypeSession || item.Session == nil {
@@ -81,6 +84,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		projectPath = item.Session.ProjectPath
+		tmuxSession = item.Session.TmuxSession
 		found = true
 		break
 	}
@@ -97,6 +101,17 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Locate the Claude Code session directory for this project.
 	sessionDir := s.findClaudeSessionDir(projectPath)
+
+	// Fallback: if the configured projectPath doesn't match a Claude projects
+	// directory, query the tmux pane's actual working directory. This handles
+	// hub-launched sessions where the configured path differs from where Claude
+	// Code was actually started.
+	if sessionDir == "" && tmuxSession != "" {
+		if actualPath := tmuxPaneCurrentPath(r.Context(), tmuxSession); actualPath != "" && actualPath != projectPath {
+			sessionDir = s.findClaudeSessionDir(actualPath)
+		}
+	}
+
 	if sessionDir == "" {
 		writeJSON(w, http.StatusOK, messagesResponse{
 			SessionID: sessionID,
@@ -198,4 +213,21 @@ func encodeProjectPath(path string) string {
 	encoded := strings.ReplaceAll(trimmed, "/", "-")
 	encoded = strings.ReplaceAll(encoded, ".", "-")
 	return "-" + encoded
+}
+
+// tmuxPaneCurrentPath returns the working directory of a tmux session's active
+// pane, or empty string if the session doesn't exist or the query fails.
+// The context is used to bound the exec call to the HTTP request lifetime.
+func tmuxPaneCurrentPath(ctx context.Context, tmuxSession string) string {
+	if tmuxSession == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", tmuxSession, "-p", "#{pane_current_path}")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
