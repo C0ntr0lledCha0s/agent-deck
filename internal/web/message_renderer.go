@@ -157,3 +157,30 @@ func hasTextContent(blocks []contentBlock) bool {
 	}
 	return false
 }
+
+// pairToolResults matches tool_result blocks with their tool_use blocks by
+// ToolUseID, merging the result text into the tool_use block and removing
+// the standalone tool_result. Non-tool blocks pass through unchanged.
+func pairToolResults(blocks []contentBlock) []contentBlock {
+	// Index tool_result blocks by their ToolUseID.
+	resultMap := make(map[string]string)
+	for _, b := range blocks {
+		if b.Type == "tool_result" && b.ToolUseID != "" {
+			resultMap[b.ToolUseID] = b.Text
+		}
+	}
+
+	var out []contentBlock
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			continue // consumed by pairing
+		}
+		if b.Type == "tool_use" && b.ToolUseID != "" {
+			if text, ok := resultMap[b.ToolUseID]; ok {
+				b.ToolResultText = text
+			}
+		}
+		out = append(out, b)
+	}
+	return out
+}

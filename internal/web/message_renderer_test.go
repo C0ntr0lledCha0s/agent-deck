@@ -106,3 +106,31 @@ func TestGroupIntoTurns_Empty(t *testing.T) {
 	turns := groupIntoTurns(nil)
 	assert.Empty(t, turns)
 }
+
+func TestPairToolResults(t *testing.T) {
+	blocks := []contentBlock{
+		{Type: "tool_use", ToolName: "Bash", ToolUseID: "t1", ToolInput: json.RawMessage(`{"command":"ls"}`)},
+		{Type: "tool_result", ToolUseID: "t1", Text: "file1.go"},
+		{Type: "tool_use", ToolName: "Read", ToolUseID: "t2", ToolInput: json.RawMessage(`{"file_path":"main.go"}`)},
+		{Type: "tool_result", ToolUseID: "t2", Text: "package main"},
+	}
+	paired := pairToolResults(blocks)
+	require.Len(t, paired, 2)
+	assert.Equal(t, "tool_use", paired[0].Type)
+	assert.Equal(t, "Bash", paired[0].ToolName)
+	assert.Equal(t, "file1.go", paired[0].ToolResultText)
+	assert.Equal(t, "Read", paired[1].ToolName)
+	assert.Equal(t, "package main", paired[1].ToolResultText)
+}
+
+func TestPairToolResults_UnpairedToolUse(t *testing.T) {
+	blocks := []contentBlock{
+		{Type: "text", Text: "hello"},
+		{Type: "tool_use", ToolName: "Bash", ToolUseID: "t1", ToolInput: json.RawMessage(`{"command":"ls"}`)},
+	}
+	paired := pairToolResults(blocks)
+	require.Len(t, paired, 2)
+	assert.Equal(t, "text", paired[0].Type)
+	assert.Equal(t, "tool_use", paired[1].Type)
+	assert.Empty(t, paired[1].ToolResultText)
+}
