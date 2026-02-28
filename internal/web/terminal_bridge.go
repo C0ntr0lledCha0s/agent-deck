@@ -128,6 +128,25 @@ func (b *tmuxPTYBridge) WriteInput(data string) error {
 	return err
 }
 
+// ExitCopyMode sends 'q' to the PTY only if the tmux pane is currently in
+// copy-mode. This prevents stray keystrokes from reaching the application
+// when the user clicks "Bottom" while not scrolled.
+func (b *tmuxPTYBridge) ExitCopyMode() error {
+	if b == nil || b.ptmx == nil {
+		return fmt.Errorf("bridge not initialized")
+	}
+	cmd := tmuxCommand("display-message", "-t", b.tmuxSession, "-p", "#{pane_in_mode}")
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("check pane mode: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "1" {
+		_, err = b.ptmx.Write([]byte("q"))
+		return err
+	}
+	return nil
+}
+
 func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 	if b == nil || b.ptmx == nil {
 		return fmt.Errorf("bridge not initialized")

@@ -2490,10 +2490,10 @@
     if (fontDown) fontDown.addEventListener("click", function () { changeTerminalFontSize(-1) })
     if (fontUp) fontUp.addEventListener("click", function () { changeTerminalFontSize(1) })
     if (scrollBtn) scrollBtn.addEventListener("click", function () {
-      // Send 'q' to exit tmux copy-mode (returns to bottom of output).
-      // Also scroll xterm.js buffer to bottom as a fallback.
+      // Ask server to exit tmux copy-mode (only sends 'q' if pane is in
+      // copy-mode, preventing stray keystrokes in the application).
       if (state.terminalWs && state.terminalWs.readyState === WebSocket.OPEN) {
-        state.terminalWs.send(JSON.stringify({ type: "input", data: "q" }))
+        state.terminalWs.send(JSON.stringify({ type: "scroll_bottom" }))
       }
       if (state.terminal) state.terminal.scrollToBottom()
     })
