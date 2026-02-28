@@ -53,6 +53,15 @@ func TestParseContentBlocks_ToolResult(t *testing.T) {
 	assert.Equal(t, "file1.go\nfile2.go", blocks[0].Text)
 }
 
+func TestParseContentBlocks_ToolResultArrayContent(t *testing.T) {
+	msg := json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"line one"},{"type":"text","text":"line two"}]}]}`)
+	blocks := parseContentBlocks(msg)
+	require.Len(t, blocks, 1)
+	assert.Equal(t, "tool_result", blocks[0].Type)
+	assert.Equal(t, "t2", blocks[0].ToolUseID)
+	assert.Equal(t, "line one\nline two", blocks[0].Text)
+}
+
 func TestParseContentBlocks_EmptyMessage(t *testing.T) {
 	msg := json.RawMessage(`{}`)
 	blocks := parseContentBlocks(msg)

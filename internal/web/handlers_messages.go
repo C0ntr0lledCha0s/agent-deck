@@ -159,7 +159,7 @@ func (s *Server) handleSessionMessagesHTML(w http.ResponseWriter, r *http.Reques
 
 	if sessionDir == "" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(`<div class="messages-empty">No messages yet.</div>`))
+		_, _ = w.Write([]byte(`<div class="messages-empty">No messages yet.</div>`))
 		return
 	}
 
@@ -171,13 +171,20 @@ func (s *Server) handleSessionMessagesHTML(w http.ResponseWriter, r *http.Reques
 
 	if result == nil || len(result.Messages) == 0 {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(`<div class="messages-empty">No messages yet.</div>`))
+		_, _ = w.Write([]byte(`<div class="messages-empty">No messages yet.</div>`))
 		return
 	}
 
 	// Parse messages into dagMessages with content blocks.
+	// Limit to most recent 200 messages to bound memory and response size.
+	msgs := result.Messages
+	const maxRenderedMessages = 200
+	if len(msgs) > maxRenderedMessages {
+		msgs = msgs[len(msgs)-maxRenderedMessages:]
+	}
+
 	var dagMsgs []dagMessage
-	for _, m := range result.Messages {
+	for _, m := range msgs {
 		blocks := parseContentBlocks(m.Message)
 		dagMsgs = append(dagMsgs, dagMessage{
 			Role:   m.Role,
@@ -199,7 +206,7 @@ func (s *Server) handleSessionMessagesHTML(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(html))
+	_, _ = w.Write([]byte(html))
 }
 
 // resolveSessionDir finds the Claude Code session directory for the given

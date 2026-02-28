@@ -75,9 +75,24 @@ func parseContentBlocks(msg json.RawMessage) []contentBlock {
 		case "tool_result":
 			text := ""
 			if len(b.Content) > 0 {
+				// Content can be a string or array of content blocks.
 				var cs string
 				if json.Unmarshal(b.Content, &cs) == nil {
 					text = cs
+				} else {
+					var contentBlocks []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					}
+					if json.Unmarshal(b.Content, &contentBlocks) == nil {
+						var parts []string
+						for _, cb := range contentBlocks {
+							if cb.Type == "text" && cb.Text != "" {
+								parts = append(parts, cb.Text)
+							}
+						}
+						text = strings.Join(parts, "\n")
+					}
 				}
 			}
 			blocks = append(blocks, contentBlock{
@@ -248,12 +263,6 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 			return s
 		}
 		return strings.Join(lines[:maxLines], "\n")
-	},
-	"lineCount": func(s string) int {
-		if s == "" {
-			return 0
-		}
-		return len(strings.Split(s, "\n"))
 	},
 	"needsTruncation": func(s string) bool {
 		lines := strings.Split(s, "\n")
