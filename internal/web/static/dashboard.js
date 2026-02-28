@@ -1685,6 +1685,25 @@
     renderSessionChain(task)
     renderPreviewHeader(task)
     renderClaudeMeta(task)
+
+    // If the Messages tab is currently active, reload messages for the new task.
+    var activeTab = document.querySelector(".detail-tab--active")
+    if (activeTab && activeTab.dataset.tab === "messages") {
+      var msgSessionId = getSessionIdForMessages(task)
+      if (msgSessionId) {
+        if (msgSessionId !== state.lastLoadedMessagesSession) {
+          loadSessionMessages(msgSessionId)
+        }
+      } else {
+        // New task has no session — clear stale messages from previous task.
+        state.lastLoadedMessagesSession = null
+        var mc = document.getElementById("messages-container")
+        if (mc) {
+          clearChildren(mc)
+          mc.appendChild(el("div", "terminal-placeholder", "No conversation data available."))
+        }
+      }
+    }
   }
 
   // ── Detail header ─────────────────────────────────────────────────
@@ -2791,6 +2810,20 @@
     })
       .then(function (r) {
         if (!r.ok) throw new Error("send failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        if (data && data.status === "delivered") {
+          // Refresh messages after a delay to pick up the sent input and any response.
+          var task = findTask(taskId)
+          var msgSessionId = getSessionIdForMessages(task)
+          if (msgSessionId) {
+            // Clear cache so reload is forced.
+            state.lastLoadedMessagesSession = null
+            setTimeout(function () { loadSessionMessages(msgSessionId) }, 1500)
+            setTimeout(function () { loadSessionMessages(msgSessionId) }, 5000)
+          }
+        }
       })
       .catch(function (err) {
         console.error("sendTaskInput:", err)
