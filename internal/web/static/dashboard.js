@@ -14,6 +14,8 @@
     previewStream: null,
     fitAddon: null,
     terminalResizeObserver: null,
+    terminalFontSize: 14,
+    terminalFullscreen: false,
     chatMode: null,
     chatModeOverride: null,
     sessionMap: {},  // menuSession.id → menuSession (from SSE menu events)
@@ -2242,30 +2244,75 @@
     var liveSession = getActiveSessionForTask(task)
     var isContainerTask = !liveSession && task.tmuxSession
 
+    var toolbar = document.getElementById("terminal-toolbar")
+
     if (!liveSession && !isContainerTask) {
       var placeholder = el("div", "terminal-placeholder", "No session attached.")
       container.appendChild(placeholder)
+      if (toolbar) toolbar.style.display = "none"
       return
     }
 
+    if (toolbar) toolbar.style.display = ""
+
+    var termFontSize = state.terminalFontSize || 14
     var term = new Terminal({
       cursorBlink: true,
-      fontSize: 14,
-      fontFamily: "var(--font-mono)",
-      scrollback: 5000,
+      cursorStyle: "bar",
+      cursorWidth: 2,
+      fontSize: termFontSize,
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'IBM Plex Mono', monospace",
+      fontWeight: "400",
+      fontWeightBold: "600",
+      lineHeight: 1.2,
+      letterSpacing: 0,
+      scrollback: 10000,
+      allowProposedApi: true,
       theme: {
         background: "#080a0e",
         foreground: "#c8d0dc",
         cursor: "#e8a932",
+        cursorAccent: "#080a0e",
+        selectionBackground: "rgba(232, 169, 50, 0.25)",
+        selectionForeground: "#ffffff",
+        black: "#1a1e2a",
+        red: "#f06060",
+        green: "#2dd4a0",
+        yellow: "#e8a932",
+        blue: "#4ca8e8",
+        magenta: "#c084fc",
+        cyan: "#22d3ee",
+        white: "#c8d0dc",
+        brightBlack: "#4a5368",
+        brightRed: "#ff7b7b",
+        brightGreen: "#5eead4",
+        brightYellow: "#fbbf24",
+        brightBlue: "#7cc4f0",
+        brightMagenta: "#d4a5ff",
+        brightCyan: "#67e8f9",
+        brightWhite: "#f0f4fc",
       },
     })
     var fitAddon = new FitAddon.FitAddon()
     term.loadAddon(fitAddon)
+
+    // Web links: make URLs clickable
+    if (typeof WebLinksAddon !== "undefined") {
+      term.loadAddon(new WebLinksAddon.WebLinksAddon())
+    }
+
     term.open(container)
+
+    // WebGL renderer: smoother rendering (falls back to canvas if unavailable)
+    if (typeof WebglAddon !== "undefined") {
+      try { term.loadAddon(new WebglAddon.WebglAddon()) } catch (e) { /* canvas fallback */ }
+    }
+
     fitAddon.fit()
 
     state.terminal = term
     state.fitAddon = fitAddon
+    updateTerminalToolbar()
 
     // Watch the container for size changes so xterm re-fits automatically.
     if (state.terminalResizeObserver) {
@@ -2275,6 +2322,7 @@
       if (state.fitAddon) {
         state.fitAddon.fit()
         sendTerminalResize()
+        updateTerminalToolbar()
       }
     })
     state.terminalResizeObserver.observe(container)
@@ -2346,6 +2394,7 @@
   }
 
   function disconnectTerminal() {
+    if (state.terminalFullscreen) toggleTerminalFullscreen()
     if (state.terminalResizeObserver) {
       state.terminalResizeObserver.disconnect()
       state.terminalResizeObserver = null
@@ -2363,7 +2412,81 @@
       state.terminal = null
     }
     state.fitAddon = null
+    var toolbar = document.getElementById("terminal-toolbar")
+    if (toolbar) toolbar.style.display = "none"
   }
+
+  // ── Terminal toolbar ──────────────────────────────────────────────
+  function updateTerminalToolbar() {
+    var dimsEl = document.getElementById("terminal-toolbar-dims")
+    var fontEl = document.getElementById("term-font-size")
+    if (state.terminal && dimsEl) {
+      dimsEl.textContent = state.terminal.cols + "\u00D7" + state.terminal.rows
+    }
+    if (fontEl) {
+      fontEl.textContent = state.terminalFontSize + "px"
+    }
+  }
+
+  function changeTerminalFontSize(delta) {
+    var newSize = Math.max(10, Math.min(24, state.terminalFontSize + delta))
+    if (newSize === state.terminalFontSize) return
+    state.terminalFontSize = newSize
+    if (state.terminal) {
+      state.terminal.options.fontSize = newSize
+      if (state.fitAddon) {
+        state.fitAddon.fit()
+        sendTerminalResize()
+      }
+    }
+    updateTerminalToolbar()
+  }
+
+  function toggleTerminalFullscreen() {
+    var detailView = document.getElementById("detail-view")
+    var btn = document.getElementById("term-fullscreen")
+    if (!detailView) return
+    state.terminalFullscreen = !state.terminalFullscreen
+    if (state.terminalFullscreen) {
+      detailView.classList.add("terminal-fullscreen")
+      if (btn) btn.textContent = "\u2716 Close"
+    } else {
+      detailView.classList.remove("terminal-fullscreen")
+      if (btn) btn.textContent = "\u26F6 Expand"
+    }
+    if (state.fitAddon) {
+      setTimeout(function () {
+        state.fitAddon.fit()
+        sendTerminalResize()
+        updateTerminalToolbar()
+      }, 50)
+    }
+  }
+
+  // Toolbar button event listeners
+  ;(function initTerminalToolbar() {
+    var fontDown = document.getElementById("term-font-down")
+    var fontUp = document.getElementById("term-font-up")
+    var copyBtn = document.getElementById("term-copy")
+    var scrollBtn = document.getElementById("term-scroll-bottom")
+    var fullscreenBtn = document.getElementById("term-fullscreen")
+
+    if (fontDown) fontDown.addEventListener("click", function () { changeTerminalFontSize(-1) })
+    if (fontUp) fontUp.addEventListener("click", function () { changeTerminalFontSize(1) })
+    if (copyBtn) copyBtn.addEventListener("click", function () {
+      if (!state.terminal) return
+      var sel = state.terminal.getSelection()
+      if (sel) {
+        navigator.clipboard.writeText(sel).catch(function () {})
+        copyBtn.textContent = "\u2714 Copied"
+        setTimeout(function () { copyBtn.textContent = "\u2398 Copy" }, 1500)
+      }
+    })
+    if (scrollBtn) scrollBtn.addEventListener("click", function () {
+      if (state.terminal) state.terminal.scrollToBottom()
+    })
+    if (fullscreenBtn) fullscreenBtn.addEventListener("click", toggleTerminalFullscreen)
+  })()
 
   // ── Phase transition ────────────────────────────────────────────────
   function handlePhaseTransition(e) {
@@ -3147,19 +3270,24 @@
       }
     }
 
+    var toolbar = document.getElementById("terminal-toolbar")
+
     if (tabName === "terminal") {
       if (terminalContainer) terminalContainer.style.display = ""
       if (messagesContainer) messagesContainer.style.display = "none"
+      if (toolbar && state.terminal) toolbar.style.display = ""
       // Re-fit terminal when switching back and sync size with server
       if (state.fitAddon) {
         setTimeout(function () {
           state.fitAddon.fit()
           sendTerminalResize()
+          updateTerminalToolbar()
         }, 50)
       }
     } else if (tabName === "messages") {
       if (terminalContainer) terminalContainer.style.display = "none"
       if (messagesContainer) messagesContainer.style.display = ""
+      if (toolbar) toolbar.style.display = "none"
 
       // Load messages for the selected task (skip if already loaded for this session)
       if (state.selectedTaskId) {

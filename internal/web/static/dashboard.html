@@ -94,6 +94,19 @@
                 <button class="detail-tab detail-tab--active" data-tab="terminal">Terminal</button>
                 <button class="detail-tab" data-tab="messages">Messages</button>
               </div>
+              <div class="terminal-toolbar" id="terminal-toolbar" style="display:none">
+                <div class="terminal-toolbar-left">
+                  <span class="terminal-toolbar-label" id="terminal-toolbar-dims"></span>
+                </div>
+                <div class="terminal-toolbar-right">
+                  <button class="terminal-toolbar-btn" id="term-font-down" title="Decrease font size">A&#x2212;</button>
+                  <span class="terminal-toolbar-label" id="term-font-size"></span>
+                  <button class="terminal-toolbar-btn" id="term-font-up" title="Increase font size">A+</button>
+                  <button class="terminal-toolbar-btn" id="term-copy" title="Copy selection">&#x2398; Copy</button>
+                  <button class="terminal-toolbar-btn" id="term-scroll-bottom" title="Scroll to bottom">&#x2193; Bottom</button>
+                  <button class="terminal-toolbar-btn" id="term-fullscreen" title="Toggle fullscreen">&#x26F6; Expand</button>
+                </div>
+              </div>
               <div class="terminal-container" id="terminal-container"></div>
               <div class="messages-container" id="messages-container" style="display:none"></div>
             </div>
@@ -236,6 +249,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
     <script src="/static/dashboard.js"></script>
   </body>
 </html>
