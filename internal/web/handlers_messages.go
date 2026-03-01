@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -267,7 +268,7 @@ func buildAugmentedMessages(dagMsgs []dag.SessionMessage) []augmentedMessage {
 				}
 
 				// Compute augments for known tool types.
-				tc.Augment = computeToolAugment(tc.Name, tc.Input, tc.Result)
+				tc.Augment = computeToolAugment(tc.Name, tc.Input, tc.Result, tc.IsError)
 
 				tools = append(tools, tc)
 			}
@@ -282,10 +283,10 @@ func buildAugmentedMessages(dagMsgs []dag.SessionMessage) []augmentedMessage {
 
 // computeToolAugment computes server-side augmentation for known tool types,
 // returning the JSON-encoded augment or nil if not applicable.
-func computeToolAugment(name string, input, result json.RawMessage) json.RawMessage {
+func computeToolAugment(name string, input, result json.RawMessage, isError bool) json.RawMessage {
 	switch name {
 	case "Bash":
-		return computeBashToolAugment(input, result)
+		return computeBashToolAugment(input, result, isError)
 	case "Read":
 		return computeReadToolAugment(input, result)
 	case "Edit":
@@ -296,16 +297,25 @@ func computeToolAugment(name string, input, result json.RawMessage) json.RawMess
 }
 
 // computeBashToolAugment computes augmentation for Bash tool calls.
-func computeBashToolAugment(input, result json.RawMessage) json.RawMessage {
+// isError reflects whether the tool_result was marked as an error in the JSONL.
+func computeBashToolAugment(input, result json.RawMessage, isError bool) json.RawMessage {
 	var stdout string
 	if result != nil {
 		_ = json.Unmarshal(result, &stdout)
 	}
-	if stdout == "" {
+	if stdout == "" && !isError {
 		return nil
 	}
-	aug := computeBashAugment(stdout, "", 0)
-	b, _ := json.Marshal(aug)
+	exitCode := 0
+	if isError {
+		exitCode = 1
+	}
+	aug := computeBashAugment(stdout, "", exitCode)
+	b, err := json.Marshal(aug)
+	if err != nil {
+		slog.Debug("failed to marshal bash augment", "error", err)
+		return nil
+	}
 	return b
 }
 
@@ -330,7 +340,11 @@ func computeReadToolAugment(input, result json.RawMessage) json.RawMessage {
 	if err != nil {
 		return nil
 	}
-	b, _ := json.Marshal(aug)
+	b, err := json.Marshal(aug)
+	if err != nil {
+		slog.Debug("failed to marshal read augment", "error", err)
+		return nil
+	}
 	return b
 }
 
@@ -352,7 +366,11 @@ func computeEditToolAugment(input, result json.RawMessage) json.RawMessage {
 	if err != nil {
 		return nil
 	}
-	b, _ := json.Marshal(aug)
+	b, err := json.Marshal(aug)
+	if err != nil {
+		slog.Debug("failed to marshal edit augment", "error", err)
+		return nil
+	}
 	return b
 }
 

@@ -12,25 +12,25 @@ import (
 
 // editAugment holds the result of diffing two versions of a file.
 type editAugment struct {
-	DiffHTML  string // HTML fragment with diff-add / diff-del spans
-	Additions int    // number of added characters
-	Deletions int    // number of deleted characters
+	DiffHTML  string `json:"diffHtml"`  // HTML fragment with diff-add / diff-del spans
+	Additions int    `json:"additions"` // number of added characters
+	Deletions int    `json:"deletions"` // number of deleted characters
 }
 
 // bashAugment holds enriched metadata for a bash command result.
 type bashAugment struct {
-	StdoutHTML string // HTML-escaped stdout
-	StderrHTML string // HTML-escaped stderr
-	LineCount  int    // number of non-empty lines in stdout
-	IsError    bool   // true when the command failed
-	Truncated  bool   // true when output was truncated
+	StdoutHTML string `json:"stdoutHtml"` // HTML-escaped stdout
+	StderrHTML string `json:"stderrHtml"` // HTML-escaped stderr
+	LineCount  int    `json:"lineCount"`  // number of non-empty lines in stdout
+	IsError    bool   `json:"isError"`    // true when the command failed
+	Truncated  bool   `json:"truncated"`  // true when output was truncated
 }
 
 // readAugment holds syntax-highlighted file content.
 type readAugment struct {
-	ContentHTML string // syntax-highlighted HTML
-	LineCount   int    // number of non-empty lines
-	Language    string // detected language name (e.g. "Go", "Python")
+	ContentHTML string `json:"contentHtml"` // syntax-highlighted HTML
+	LineCount   int    `json:"lineCount"`   // number of non-empty lines
+	Language    string `json:"language"`     // detected language name (e.g. "Go", "Python")
 }
 
 // computeEditAugment computes a character-level diff between oldText and

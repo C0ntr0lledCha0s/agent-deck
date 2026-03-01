@@ -2531,7 +2531,7 @@
 
     var command = input && input.command ? input.command : ""
     var description = input && input.description ? input.description : ""
-    var isError = augment && augment.IsError
+    var isError = augment && augment.isError
 
     // Header: checkmark + Bash + truncated command
     var header = el("div", "tool-header")
@@ -2638,17 +2638,17 @@
     header.appendChild(el("span", "tool-summary", basename(filename)))
 
     if (augment) {
-      if (augment.Additions > 0 || augment.additions > 0) {
-        header.appendChild(el("span", "tool-badge tool-badge--add", "+" + (augment.Additions || augment.additions)))
+      if (augment.additions > 0) {
+        header.appendChild(el("span", "tool-badge tool-badge--add", "+" + augment.additions))
       }
-      if (augment.Deletions > 0 || augment.deletions > 0) {
-        header.appendChild(el("span", "tool-badge tool-badge--del", "-" + (augment.Deletions || augment.deletions)))
+      if (augment.deletions > 0) {
+        header.appendChild(el("span", "tool-badge tool-badge--del", "-" + augment.deletions))
       }
     }
     wrap.appendChild(header)
 
     // Inline diff preview (visible by default, max 8 lines)
-    var diffHtml = augment && (augment.DiffHTML || augment.diffHtml) ? (augment.DiffHTML || augment.diffHtml) : ""
+    var diffHtml = augment && augment.diffHtml ? augment.diffHtml : ""
     if (diffHtml) {
       var preview = el("div", "tool-preview tool-preview--faded")
       var diffContainer = document.createElement("div")
@@ -2686,7 +2686,7 @@
 
     var filename = input && (input.file_path || input.filePath) ? (input.file_path || input.filePath) : "unknown"
     var content = typeof result === "string" ? result : ""
-    var lineCount = augment && (augment.LineCount || augment.lineCount) ? (augment.LineCount || augment.lineCount) : (content ? content.split("\n").length : 0)
+    var lineCount = augment && augment.lineCount ? augment.lineCount : (content ? content.split("\n").length : 0)
 
     // Header: checkmark + Read + basename + line count
     var header = el("div", "tool-header")
@@ -2701,7 +2701,7 @@
 
     // No inline preview for Read (low signal) — expand on click
     var body = el("div", "tool-body tool-collapsed")
-    var highlightedHtml = augment && (augment.ContentHTML || augment.highlightedHtml || augment.contentHtml)
+    var highlightedHtml = augment && augment.contentHtml
     if (highlightedHtml) {
       var hlContainer = document.createElement("div")
       hlContainer.setAttribute("data-server-rendered", "true")
