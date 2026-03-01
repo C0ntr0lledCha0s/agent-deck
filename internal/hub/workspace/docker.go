@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/docker/docker/api/types/container"
 	dockermount "github.com/docker/docker/api/types/mount"
@@ -44,6 +45,14 @@ func (d *DockerRuntime) Create(ctx context.Context, opts CreateOpts) (string, er
 			NanoCPUs: opts.NanoCPUs,
 			Memory:   opts.Memory,
 		},
+		SecurityOpt: opts.SecurityOpts,
+		CapAdd:      opts.CapAdd,
+		CapDrop:     opts.CapDrop,
+		AutoRemove:  opts.AutoRemove,
+	}
+
+	if opts.NetworkMode != "" {
+		hostCfg.NetworkMode = container.NetworkMode(opts.NetworkMode)
 	}
 
 	for _, m := range opts.Mounts {
@@ -184,4 +193,31 @@ func (d *DockerRuntime) Exec(ctx context.Context, containerID string, cmd []stri
 		combined = append(combined, errBuf.Bytes()...)
 	}
 	return combined, inspectResp.ExitCode, nil
+}
+
+// SelfNetworks returns the Docker networks this process's container belongs to.
+// Returns nil if not running inside a container (hostname doesn't match a container).
+// Used to join sibling containers to the same networks for communication.
+func (d *DockerRuntime) SelfNetworks(ctx context.Context) ([]string, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return nil, fmt.Errorf("hostname: %w", err)
+	}
+
+	info, err := d.cli.ContainerInspect(ctx, hostname)
+	if err != nil {
+		// Not running in a container, or container not found — not an error.
+		if errdefs.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("inspect self %q: %w", hostname, err)
+	}
+
+	var networks []string
+	if info.NetworkSettings != nil {
+		for name := range info.NetworkSettings.Networks {
+			networks = append(networks, name)
+		}
+	}
+	return networks, nil
 }

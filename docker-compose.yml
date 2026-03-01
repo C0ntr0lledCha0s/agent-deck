@@ -1,0 +1,24 @@
+services:
+  agent-deck:
+    build: .
+    image: agent-deck:latest
+    container_name: agent-deck
+    restart: unless-stopped
+    group_add:
+      - "${DOCKER_GID:-999}"
+    ports:
+      - "8420:8420"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - agent-deck-config:/home/agentdeck/.agent-deck
+    environment:
+      - AGENTDECK_PROFILE=default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.agent-deck.rule=Host(`agentdeck.${DOMAIN}`)"
+      - "traefik.http.routers.agent-deck.entrypoints=websecure"
+      - "traefik.http.routers.agent-deck.tls.certresolver=cfdns"
+      - "traefik.http.services.agent-deck.loadbalancer.server.port=8420"
+
+volumes:
+  agent-deck-config:
