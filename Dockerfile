@@ -22,8 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user
-RUN groupadd --gid 1000 agentdeck \
+# Non-root user (Ubuntu 24.04 ships with ubuntu:1000, so remove it first)
+RUN userdel -r ubuntu 2>/dev/null; \
+    groupadd --gid 1000 agentdeck \
     && useradd --uid 1000 --gid 1000 -m agentdeck
 
 COPY --from=builder /out/agent-deck /usr/local/bin/agent-deck
