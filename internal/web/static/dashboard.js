@@ -3891,25 +3891,23 @@
   }
 
   // ── Live message polling ──────────────────────────────────────
+  function ensureLiveIndicator(container) {
+    if (!container || container.querySelector(".messages-live-indicator")) return
+    var indicator = document.createElement("div")
+    indicator.className = "messages-live-indicator"
+    var dot = document.createElement("span")
+    dot.className = "messages-live-dot"
+    indicator.appendChild(dot)
+    indicator.appendChild(document.createTextNode("Live"))
+    container.insertBefore(indicator, container.firstChild)
+  }
+
   function startMessagePolling(sessionId) {
     if (state.messagePollingTimer && state.messagePollingSessionId === sessionId) return
     stopMessagePolling()
     state.messagePollingSessionId = sessionId
 
-    // Show live indicator
-    var container = document.getElementById("messages-container")
-    if (container) {
-      var existing = container.querySelector(".messages-live-indicator")
-      if (!existing) {
-        var indicator = document.createElement("div")
-        indicator.className = "messages-live-indicator"
-        var dot = document.createElement("span")
-        dot.className = "messages-live-dot"
-        indicator.appendChild(dot)
-        indicator.appendChild(document.createTextNode("Live"))
-        container.insertBefore(indicator, container.firstChild)
-      }
-    }
+    ensureLiveIndicator(document.getElementById("messages-container"))
 
     state.messagePollingTimer = setInterval(function () {
       fetchMessagesIfChanged(sessionId)
@@ -3922,6 +3920,7 @@
       state.messagePollingTimer = null
     }
     state.messagePollingSessionId = null
+    state.lastMessageFingerprint = null
 
     // Remove live indicator
     var container = document.getElementById("messages-container")
@@ -3951,16 +3950,7 @@
 
           // Re-add live indicator after re-render if still polling
           if (state.messagePollingTimer) {
-            var container = document.getElementById("messages-container")
-            if (container && !container.querySelector(".messages-live-indicator")) {
-              var indicator = document.createElement("div")
-              indicator.className = "messages-live-indicator"
-              var dot = document.createElement("span")
-              dot.className = "messages-live-dot"
-              indicator.appendChild(dot)
-              indicator.appendChild(document.createTextNode("Live"))
-              container.insertBefore(indicator, container.firstChild)
-            }
+            ensureLiveIndicator(document.getElementById("messages-container"))
           }
         }
       })

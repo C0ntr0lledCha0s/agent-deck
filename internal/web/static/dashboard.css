@@ -2181,6 +2181,10 @@
   50% { opacity: 0.3; }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .messages-live-dot { animation: none; }
+}
+
 /* ── Tool items (nested inside assistant messages) ───────────── */
 
 .tool-items {
