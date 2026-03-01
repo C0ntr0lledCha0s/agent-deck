@@ -144,6 +144,12 @@ func (s *Server) handleHighlight(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024) // 2 MB limit
 
 	var req struct {
 		Blocks []struct {

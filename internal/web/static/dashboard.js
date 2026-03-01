@@ -27,6 +27,7 @@
     messagePollingSessionId: null,   // session being polled
     lastMessageFingerprint: null,    // "count:lastUUID" for change detection
     messageFetchInFlight: false,     // guard against concurrent fetches
+    messagePollingErrors: 0,         // consecutive fetch error count
   }
 
   // ── Status metadata ─────────────────────────────────────────────
@@ -3921,6 +3922,7 @@
     }
     state.messagePollingSessionId = null
     state.lastMessageFingerprint = null
+    state.messagePollingErrors = 0
 
     // Remove live indicator
     var container = document.getElementById("messages-container")
@@ -3941,6 +3943,7 @@
         return r.json()
       })
       .then(function (data) {
+        state.messagePollingErrors = 0
         var messages = data && data.messages ? data.messages : []
         var fp = messages.length + ":" + (messages.length > 0 ? (messages[messages.length - 1].uuid || "") : "")
 
@@ -3956,6 +3959,11 @@
       })
       .catch(function (err) {
         console.error("fetchMessagesIfChanged:", err)
+        state.messagePollingErrors++
+        if (state.messagePollingErrors >= 5) {
+          console.error("fetchMessagesIfChanged: stopping after 5 consecutive errors")
+          stopMessagePolling()
+        }
       })
       .finally(function () {
         state.messageFetchInFlight = false
@@ -3973,11 +3981,25 @@
     if (status === "running" || status === "thinking") {
       startMessagePolling(sessionId)
     } else {
-      // Do one final fetch to get the latest state, then stop
+      // Do one final fetch, then stop. Stop the interval first to prevent
+      // further ticks, but preserve the fingerprint so the final fetch can
+      // do a proper change comparison before we clear everything.
+      var wasPolling = !!state.messagePollingTimer
       if (state.messagePollingTimer) {
+        clearInterval(state.messagePollingTimer)
+        state.messagePollingTimer = null
+      }
+      if (wasPolling) {
         fetchMessagesIfChanged(sessionId)
       }
-      stopMessagePolling()
+      // Now clear remaining state (sessionId, fingerprint, indicator)
+      state.messagePollingSessionId = null
+      state.messagePollingErrors = 0
+      var container = document.getElementById("messages-container")
+      if (container) {
+        var indicator = container.querySelector(".messages-live-indicator")
+        if (indicator) indicator.remove()
+      }
     }
   }
 
@@ -4111,8 +4133,8 @@
     // Italic
     text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>')
     text = text.replace(/_([^_]+)_/g, '<em>$1</em>')
-    // Links [text](url)
-    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    // Links [text](url) — only allow http(s) URLs to prevent javascript: XSS
+    text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
     return text
   }
 
@@ -4140,12 +4162,17 @@
     }
 
     // Fire-and-forget highlight request
-    fetch("/api/highlight", {
+    var hlHeaders = authHeaders()
+    hlHeaders["Content-Type"] = "application/json"
+    fetch(apiPathWithToken("/api/highlight"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: hlHeaders,
       body: JSON.stringify({ blocks: blocks })
     })
-    .then(function (r) { return r.json() })
+    .then(function (r) {
+      if (!r.ok) throw new Error("highlight failed: " + r.status)
+      return r.json()
+    })
     .then(function (data) {
       if (data.blocks) {
         for (var i = 0; i < data.blocks.length && i < elements.length; i++) {
@@ -4157,7 +4184,7 @@
         }
       }
     })
-    .catch(function () { /* highlighting is optional */ })
+    .catch(function (err) { console.error("highlightCodeBlocks:", err) })
 
     addCopyButtons(container)
   }
@@ -4179,7 +4206,7 @@
           navigator.clipboard.writeText(text).then(function () {
             e.target.textContent = "Copied!"
             setTimeout(function () { e.target.textContent = "Copy" }, 1500)
-          })
+          }).catch(function () { e.target.textContent = "Failed" })
         }
       })(pre))
       pre.appendChild(btn)

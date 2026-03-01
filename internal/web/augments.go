@@ -4,6 +4,7 @@
 package web
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/highlight"
@@ -105,12 +106,29 @@ type diffOp struct {
 	text string
 }
 
+// maxDiffLines is the threshold above which we skip LCS diffing to avoid
+// excessive memory usage. For large files we fall back to showing all old
+// lines as removals and all new lines as additions.
+const maxDiffLines = 2000
+
 // diffLines computes a line-level diff between old and new lines using a
 // simple LCS (Longest Common Subsequence) algorithm. Returns a sequence of
 // diffOp values representing equal, removed, and inserted lines.
 func diffLines(oldLines, newLines []string) []diffOp {
 	m := len(oldLines)
 	n := len(newLines)
+
+	// Guard against excessive memory for very large files.
+	if m > maxDiffLines || n > maxDiffLines {
+		ops := make([]diffOp, 0, m+n)
+		for _, line := range oldLines {
+			ops = append(ops, diffOp{kind: diffRemove, text: line})
+		}
+		for _, line := range newLines {
+			ops = append(ops, diffOp{kind: diffInsert, text: line})
+		}
+		return ops
+	}
 
 	// Build LCS length table.
 	dp := make([][]int, m+1)
@@ -166,39 +184,33 @@ func splitLines(text string) []string {
 	return lines
 }
 
+// lineNoWidth is the column width used for diff line numbers.
+const lineNoWidth = 4
+
 // writeLineNo writes the line number columns for a diff line.
 // A value of 0 means the column should be blank (the line doesn't exist on that side).
 func writeLineNo(b *strings.Builder, oldNo, newNo int) {
 	b.WriteString(`<span class="diff-ln">`)
 	if oldNo > 0 {
-		b.WriteString(strings.Repeat(" ", 4-len(itoa(oldNo))))
-		b.WriteString(itoa(oldNo))
+		s := strconv.Itoa(oldNo)
+		if pad := lineNoWidth - len(s); pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+		b.WriteString(s)
 	} else {
 		b.WriteString("    ")
 	}
 	b.WriteString(`</span><span class="diff-ln">`)
 	if newNo > 0 {
-		b.WriteString(strings.Repeat(" ", 4-len(itoa(newNo))))
-		b.WriteString(itoa(newNo))
+		s := strconv.Itoa(newNo)
+		if pad := lineNoWidth - len(s); pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+		b.WriteString(s)
 	} else {
 		b.WriteString("    ")
 	}
 	b.WriteString(`</span>`)
-}
-
-// itoa converts an int to a string without importing strconv.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var digits [20]byte
-	i := len(digits)
-	for n > 0 {
-		i--
-		digits[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(digits[i:])
 }
 
 // computeBashAugment creates a bashAugment from command output. It counts

@@ -127,6 +127,41 @@ func TestReadSession_ToolResultError(t *testing.T) {
 	assert.Equal(t, "command failed", msgs[1].ToolResultBlocks[0].Content)
 }
 
+func TestExtractToolResultContent_PlainString(t *testing.T) {
+	raw := json.RawMessage(`"hello world"`)
+	assert.Equal(t, "hello world", extractToolResultContent(raw))
+}
+
+func TestExtractToolResultContent_ArrayOfBlocks(t *testing.T) {
+	raw := json.RawMessage(`[{"type":"text","text":"line 1"},{"type":"text","text":"line 2"}]`)
+	assert.Equal(t, "line 1\nline 2", extractToolResultContent(raw))
+}
+
+func TestExtractToolResultContent_Null(t *testing.T) {
+	raw := json.RawMessage(`null`)
+	assert.Equal(t, "", extractToolResultContent(raw))
+}
+
+func TestExtractToolResultContent_Empty(t *testing.T) {
+	assert.Equal(t, "", extractToolResultContent(nil))
+	assert.Equal(t, "", extractToolResultContent(json.RawMessage{}))
+}
+
+func TestExtractToolResultContent_MalformedJSON(t *testing.T) {
+	raw := json.RawMessage(`{not valid json}`)
+	assert.Equal(t, "", extractToolResultContent(raw))
+}
+
+func TestExtractToolResultContent_EmptyArray(t *testing.T) {
+	raw := json.RawMessage(`[]`)
+	assert.Equal(t, "", extractToolResultContent(raw))
+}
+
+func TestExtractToolResultContent_ArrayWithEmptyTexts(t *testing.T) {
+	raw := json.RawMessage(`[{"type":"text","text":""},{"type":"text","text":"only this"}]`)
+	assert.Equal(t, "only this", extractToolResultContent(raw))
+}
+
 func TestReadSession_MultipleToolUses(t *testing.T) {
 	dir := t.TempDir()
 
