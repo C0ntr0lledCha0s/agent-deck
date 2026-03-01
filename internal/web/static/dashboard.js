@@ -3459,7 +3459,11 @@
   }
 
   function initMessageInteractions(container) {
-    // Tool row click -> toggle content visibility (event delegation)
+    // Attach the click delegation listener only once per container element.
+    // Without this guard, each loadSessionMessages call stacks another
+    // listener, causing toggle operations to cancel each other out.
+    if (!container._msgClickAttached) {
+    container._msgClickAttached = true
     container.addEventListener("click", function (e) {
       var header = e.target.closest(".tool-row-header")
       if (header) {
@@ -3550,6 +3554,7 @@
         }
       }
     })
+    } // end _msgClickAttached guard
 
     // Wrap <pre> elements with copy button overlay
     var pres = container.querySelectorAll("pre")
