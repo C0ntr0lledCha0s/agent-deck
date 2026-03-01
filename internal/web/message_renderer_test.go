@@ -162,7 +162,7 @@ func TestRenderMessagesHTML_AssistantTurn(t *testing.T) {
 	html, err := renderMessagesHTML(turns)
 	require.NoError(t, err)
 	assert.Contains(t, html, `class="assistant-turn"`)
-	assert.Contains(t, html, `md-content`)
+	assert.Contains(t, html, `md-content timeline-item`)
 	assert.Contains(t, html, "<p>hi there</p>")
 	assert.NotContains(t, html, "message-user-prompt")
 }
@@ -176,7 +176,7 @@ func TestRenderMessagesHTML_ThinkingBlock(t *testing.T) {
 	}
 	html, err := renderMessagesHTML(turns)
 	require.NoError(t, err)
-	assert.Contains(t, html, `class="thinking-block collapsible"`)
+	assert.Contains(t, html, `class="thinking-block collapsible timeline-item"`)
 	assert.Contains(t, html, "let me think about this")
 	assert.Contains(t, html, "the answer")
 }
@@ -189,12 +189,13 @@ func TestRenderMessagesHTML_ToolBlock(t *testing.T) {
 	}
 	html, err := renderMessagesHTML(turns)
 	require.NoError(t, err)
-	assert.Contains(t, html, `class="tool-indicator"`)
-	assert.Contains(t, html, `class="tool-indicator-header"`)
+	assert.Contains(t, html, `class="tool-row timeline-item status-complete"`)
+	assert.Contains(t, html, `class="tool-row-header"`)
 	assert.Contains(t, html, `class="tool-name"`)
 	assert.Contains(t, html, "Bash")
 	assert.Contains(t, html, "ls -la")
 	assert.Contains(t, html, "file1.go")
+	assert.NotContains(t, html, `class="tool-dot"`)
 }
 
 func TestRenderMessagesHTML_EscapesHTML(t *testing.T) {
@@ -223,7 +224,71 @@ func TestRenderMessagesHTML_Markdown(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, html, "<strong>bold</strong>")
 	assert.Contains(t, html, "<code>inline code</code>")
-	assert.Contains(t, html, `md-content`)
+	assert.Contains(t, html, `md-content timeline-item`)
+}
+
+func TestShortenPath(t *testing.T) {
+	tests := []struct {
+		input    string
+		n        int
+		expected string
+	}{
+		{"/home/user/code/agent-deck/.worktrees/feature/internal/web/static/dashboard.css", 3, "web/static/dashboard.css"},
+		{"/short/path.go", 3, "/short/path.go"},
+		{"file.go", 3, "file.go"},
+		{"/a/b/c/d/e.go", 2, "d/e.go"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.expected, shortenPath(tt.input, tt.n))
+	}
+}
+
+func TestToolInputSummary_ShortensPaths(t *testing.T) {
+	input := json.RawMessage(`{"file_path":"/home/user/code/project/internal/web/static/dashboard.css"}`)
+	summary := toolInputSummary("Read", input)
+	assert.Equal(t, "web/static/dashboard.css", summary)
+}
+
+func TestToolInputSummary_TruncatesBash(t *testing.T) {
+	long := `{"command":"git add file1.go file2.go file3.go file4.go file5.go file6.go file7.go file8.go file9.go file10.go"}`
+	summary := toolInputSummary("Bash", json.RawMessage(long))
+	assert.LessOrEqual(t, len(summary), 80)
+	assert.True(t, len(summary) > 0)
+}
+
+func TestCleanUserText(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "extracts command name from command tags",
+			input:    `<command-message>superpowers:review</command-message> <command-name>/superpowers:review</command-name>`,
+			expected: "/superpowers:review",
+		},
+		{
+			name:     "strips system-reminder tags",
+			input:    `hello <system-reminder>internal data</system-reminder> world`,
+			expected: "hello  world",
+		},
+		{
+			name:     "preserves normal text",
+			input:    "just a normal user message",
+			expected: "just a normal user message",
+		},
+		{
+			name:     "returns original if no command name found",
+			input:    `<command-message>foo</command-message>`,
+			expected: `<command-message>foo</command-message>`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := cleanUserText(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }
 
 func TestRenderMessagesHTML_MarkdownXSS(t *testing.T) {

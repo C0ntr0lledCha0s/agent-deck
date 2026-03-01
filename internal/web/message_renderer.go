@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"html/template"
+	"regexp"
 	"strings"
 	"time"
 
@@ -207,6 +208,16 @@ func pairToolResults(blocks []contentBlock) []contentBlock {
 	return out
 }
 
+// shortenPath trims an absolute file path to at most the last n path
+// components. For example, "/a/b/c/d/e.go" with n=3 becomes "c/d/e.go".
+func shortenPath(fp string, n int) string {
+	parts := strings.Split(fp, "/")
+	if len(parts) <= n {
+		return fp
+	}
+	return strings.Join(parts[len(parts)-n:], "/")
+}
+
 // toolInputSummary extracts a short summary from tool input JSON for display
 // in the tool header.
 func toolInputSummary(name string, input json.RawMessage) string {
@@ -220,11 +231,14 @@ func toolInputSummary(name string, input json.RawMessage) string {
 	switch name {
 	case "Bash":
 		if cmd, ok := m["command"].(string); ok {
+			if len(cmd) > 80 {
+				return cmd[:77] + "..."
+			}
 			return cmd
 		}
 	case "Read", "Write", "Edit":
 		if fp, ok := m["file_path"].(string); ok {
-			return fp
+			return shortenPath(fp, 3)
 		}
 	case "Glob":
 		if p, ok := m["pattern"].(string); ok {
@@ -233,29 +247,50 @@ func toolInputSummary(name string, input json.RawMessage) string {
 	case "Grep":
 		if p, ok := m["pattern"].(string); ok {
 			return p
+		}
+	case "WebFetch":
+		if u, ok := m["url"].(string); ok {
+			if len(u) > 60 {
+				return u[:57] + "..."
+			}
+			return u
+		}
+	case "WebSearch":
+		if q, ok := m["query"].(string); ok {
+			return q
+		}
+	case "Agent", "Task":
+		if d, ok := m["description"].(string); ok {
+			if len(d) > 60 {
+				return d[:57] + "..."
+			}
+			return d
 		}
 	}
 	return ""
 }
 
-// toolIcon returns the display icon for a tool name.
-func toolIcon(name string) string {
-	switch name {
-	case "Bash":
-		return "$"
-	case "Read":
-		return "\U0001F4C4" // file emoji
-	case "Write":
-		return "\u270D" // writing hand
-	case "Edit":
-		return "\u270E" // pencil
-	case "Glob":
-		return "\U0001F50D" // magnifying glass
-	case "Grep":
-		return "\U0001F50E" // magnifying glass right
-	default:
-		return "\u2699" // gear
+// internalTagRe matches Claude Code internal protocol tags that should not be
+// shown to users (command-message, command-name, system-reminder, etc.).
+var internalTagRe = regexp.MustCompile(`<(?:command-message|command-name|command-args|system-reminder|local-command-stdout|local-command-caveat)[^>]*>[\s\S]*?</(?:command-message|command-name|command-args|system-reminder|local-command-stdout|local-command-caveat)>`)
+
+// commandNameRe extracts the command name from <command-name> tags.
+var commandNameRe = regexp.MustCompile(`<command-name>\s*(/?[^<]+?)\s*</command-name>`)
+
+// cleanUserText strips internal protocol tags from user message text and trims
+// whitespace. If the cleaned text is empty but the original contained a
+// command-name tag, returns the command name (e.g. "/commit"). Otherwise
+// returns the original text.
+func cleanUserText(s string) string {
+	cleaned := strings.TrimSpace(internalTagRe.ReplaceAllString(s, ""))
+	if cleaned != "" {
+		return cleaned
 	}
+	// Try extracting a command name for display.
+	if m := commandNameRe.FindStringSubmatch(s); len(m) > 1 {
+		return strings.TrimSpace(m[1])
+	}
+	return s
 }
 
 // mdRenderer is a goldmark instance configured for safe markdown rendering.
@@ -279,8 +314,8 @@ func renderMarkdown(text string) template.HTML {
 
 var messagesTemplate = template.Must(template.New("messages").Funcs(template.FuncMap{
 	"toolInputSummary": toolInputSummary,
-	"toolIcon":         toolIcon,
 	"markdown":         renderMarkdown,
+	"cleanUser":        cleanUserText,
 	"truncateLines": func(s string, maxLines int) string {
 		lines := strings.Split(s, "\n")
 		if len(lines) <= maxLines {
@@ -297,9 +332,9 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 	`<div class="user-prompt-container">` +
 	`<div class="message message-user-prompt">` +
 	`<div class="message-content">` +
-	`{{range .Blocks}}{{if eq .Type "text"}}` +
-	`{{if needsTruncation .Text}}<div class="text-block collapsible-text"><div class="truncated-content">{{truncateLines .Text 12}}<div class="fade-overlay"></div></div><button class="show-more-btn" type="button">Show more</button></div>` +
-	`{{else}}<div class="text-block">{{.Text}}</div>{{end}}` +
+	`{{range .Blocks}}{{if eq .Type "text"}}{{$clean := cleanUser .Text}}` +
+	`{{if needsTruncation $clean}}<div class="text-block collapsible-text"><div class="truncated-content">{{truncateLines $clean 12}}<div class="fade-overlay"></div></div><button class="show-more-btn" type="button">Show more</button></div>` +
+	`{{else}}<div class="text-block">{{$clean}}</div>{{end}}` +
 	`{{end}}{{end}}` +
 	`</div></div></div>` +
 
@@ -308,21 +343,20 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 	`<div class="assistant-turn">` +
 	`{{range .Blocks}}` +
 	`{{if eq .Type "thinking"}}` +
-	`<details class="thinking-block collapsible">` +
+	`<details class="thinking-block collapsible timeline-item">` +
 	`<summary class="collapsible__summary"><span class="collapsible__icon">&#x25B8;</span> Thinking</summary>` +
 	`<div class="thinking-content">{{.Text}}</div>` +
 	`</details>` +
 	`{{else if eq .Type "text"}}` +
-	`<div class="text-block md-content">{{markdown .Text}}</div>` +
+	`<div class="text-block md-content timeline-item">{{markdown .Text}}</div>` +
 	`{{else if eq .Type "tool_use"}}` +
-	`<div class="tool-indicator">` +
-	`<div class="tool-indicator-header" aria-expanded="false">` +
-	`<span class="tool-dot">●</span>` +
+	`<div class="tool-row timeline-item status-complete">` +
+	`<div class="tool-row-header" aria-expanded="false">` +
 	`<span class="tool-name">{{.ToolName}}</span>` +
 	`<span class="tool-summary">{{toolInputSummary .ToolName .ToolInput}}</span>` +
-	`<span class="tool-expand-arrow">▸</span>` +
+	`<span class="expand-chevron">▸</span>` +
 	`</div>` +
-	`<div class="tool-indicator-body tool-collapsed">` +
+	`<div class="tool-row-content tool-collapsed">` +
 	`{{if .ToolResultText}}<pre class="tool-output">{{.ToolResultText}}</pre>{{end}}` +
 	`</div>` +
 	`</div>` +

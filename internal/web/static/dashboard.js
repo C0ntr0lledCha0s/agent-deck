@@ -3031,12 +3031,12 @@
   }
 
   function initMessageInteractions(container) {
-    // Tool indicator click -> toggle body visibility (event delegation)
+    // Tool row click -> toggle content visibility (event delegation)
     container.addEventListener("click", function (e) {
-      var header = e.target.closest(".tool-indicator-header")
+      var header = e.target.closest(".tool-row-header")
       if (header) {
         var body = header.nextElementSibling
-        if (body && body.classList.contains("tool-indicator-body")) {
+        if (body && body.classList.contains("tool-row-content")) {
           var isExpanded = !body.classList.contains("tool-collapsed")
           body.classList.toggle("tool-collapsed")
           header.setAttribute("aria-expanded", isExpanded ? "false" : "true")
