@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,4 +34,38 @@ func TestNewDockerRuntime(t *testing.T) {
 func TestDockerRuntimeImplementsInterface(t *testing.T) {
 	// Compile-time check that DockerRuntime satisfies ContainerRuntime.
 	var _ ContainerRuntime = (*DockerRuntime)(nil)
+}
+
+func TestCreateAppliesSecurityOpts(t *testing.T) {
+	rt := skipIfNoDockerRuntime(t)
+	ctx := context.Background()
+	name := "agentdeck-security-test"
+
+	// Cleanup from any previous failed run.
+	_ = rt.Remove(ctx, name, true)
+	t.Cleanup(func() {
+		_ = rt.Remove(context.Background(), name, true)
+	})
+
+	id, err := rt.Create(ctx, CreateOpts{
+		Name:         name,
+		Image:        "alpine:latest",
+		Cmd:          []string{"sleep", "10"},
+		SecurityOpts: []string{"no-new-privileges"},
+		CapAdd:       []string{"NET_ADMIN"},
+		CapDrop:      []string{"MKNOD"},
+		NetworkMode:  "none",
+		AutoRemove:   false, // Can't inspect auto-removed containers
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, id)
+
+	// Inspect the container to verify security options were applied.
+	info, err := rt.cli.ContainerInspect(ctx, name)
+	require.NoError(t, err)
+	assert.Contains(t, info.HostConfig.SecurityOpt, "no-new-privileges")
+	// Docker normalizes capability names by prepending "CAP_".
+	assert.Contains(t, info.HostConfig.CapAdd, "CAP_NET_ADMIN")
+	assert.Contains(t, info.HostConfig.CapDrop, "CAP_MKNOD")
+	assert.Equal(t, container.NetworkMode("none"), info.HostConfig.NetworkMode)
 }

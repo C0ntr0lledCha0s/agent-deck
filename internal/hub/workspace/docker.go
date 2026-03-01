@@ -44,6 +44,14 @@ func (d *DockerRuntime) Create(ctx context.Context, opts CreateOpts) (string, er
 			NanoCPUs: opts.NanoCPUs,
 			Memory:   opts.Memory,
 		},
+		SecurityOpt: opts.SecurityOpts,
+		CapAdd:      opts.CapAdd,
+		CapDrop:     opts.CapDrop,
+		AutoRemove:  opts.AutoRemove,
+	}
+
+	if opts.NetworkMode != "" {
+		hostCfg.NetworkMode = container.NetworkMode(opts.NetworkMode)
 	}
 
 	for _, m := range opts.Mounts {
