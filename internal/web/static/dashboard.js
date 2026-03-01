@@ -23,6 +23,10 @@
     chatModeOverride: null,
     sessionMap: {},  // menuSession.id → menuSession (from SSE menu events)
     workspacesSubTab: "workspaces",  // "workspaces" | "templates"
+    messagePollingTimer: null,       // setInterval ID
+    messagePollingSessionId: null,   // session being polled
+    lastMessageFingerprint: null,    // "count:lastUUID" for change detection
+    messageFetchInFlight: false,     // guard against concurrent fetches
   }
 
   // ── Status metadata ─────────────────────────────────────────────
@@ -1831,7 +1835,10 @@
     })
       .then(function (r) {
         if (!r.ok) throw new Error("delete failed: " + r.status)
-        if (state.selectedTaskId === taskId) state.selectedTaskId = null
+        if (state.selectedTaskId === taskId) {
+          state.selectedTaskId = null
+          stopMessagePolling()
+        }
         fetchTasks()
       })
       .catch(function (err) { console.error("delete:", err) })
@@ -2081,6 +2088,7 @@
 
     renderChatBar()
     renderAskBanner()
+    evaluateMessagePolling()
   }
 
   // ── Right panel ───────────────────────────────────────────────────
@@ -3196,6 +3204,7 @@
   // ── Mobile back ───────────────────────────────────────────────────
   function handleMobileBack() {
     state.selectedTaskId = null
+    stopMessagePolling()
     disconnectTerminal()
     var panels = document.getElementById("panels")
     if (panels) panels.classList.remove("detail-active")
@@ -3656,14 +3665,11 @@
       })
       .then(function (data) {
         if (data && data.status === "delivered") {
-          // Refresh messages after a delay to pick up the sent input and any response.
           var task = findTask(taskId)
           var msgSessionId = getSessionIdForMessages(task)
           if (msgSessionId) {
-            // Clear cache so reload is forced.
-            state.lastLoadedMessagesSession = null
-            setTimeout(function () { loadSessionMessages(msgSessionId) }, 1500)
-            setTimeout(function () { loadSessionMessages(msgSessionId) }, 5000)
+            // Start polling immediately so messages update live
+            startMessagePolling(msgSessionId)
           }
         }
       })
@@ -3870,6 +3876,8 @@
       })
       .then(function (data) {
         var messages = data && data.messages ? data.messages : []
+        var fp = messages.length + ":" + (messages.length > 0 ? (messages[messages.length - 1].uuid || "") : "")
+        state.lastMessageFingerprint = fp
         renderMessages(messages)
       })
       .catch(function (err) {
@@ -3880,6 +3888,107 @@
           container.appendChild(el("div", "terminal-placeholder", "Failed to load messages."))
         }
       })
+  }
+
+  // ── Live message polling ──────────────────────────────────────
+  function startMessagePolling(sessionId) {
+    if (state.messagePollingTimer && state.messagePollingSessionId === sessionId) return
+    stopMessagePolling()
+    state.messagePollingSessionId = sessionId
+
+    // Show live indicator
+    var container = document.getElementById("messages-container")
+    if (container) {
+      var existing = container.querySelector(".messages-live-indicator")
+      if (!existing) {
+        var indicator = document.createElement("div")
+        indicator.className = "messages-live-indicator"
+        var dot = document.createElement("span")
+        dot.className = "messages-live-dot"
+        indicator.appendChild(dot)
+        indicator.appendChild(document.createTextNode("Live"))
+        container.insertBefore(indicator, container.firstChild)
+      }
+    }
+
+    state.messagePollingTimer = setInterval(function () {
+      fetchMessagesIfChanged(sessionId)
+    }, 3000)
+  }
+
+  function stopMessagePolling() {
+    if (state.messagePollingTimer) {
+      clearInterval(state.messagePollingTimer)
+      state.messagePollingTimer = null
+    }
+    state.messagePollingSessionId = null
+
+    // Remove live indicator
+    var container = document.getElementById("messages-container")
+    if (container) {
+      var indicator = container.querySelector(".messages-live-indicator")
+      if (indicator) indicator.remove()
+    }
+  }
+
+  function fetchMessagesIfChanged(sessionId) {
+    if (state.messageFetchInFlight) return
+    state.messageFetchInFlight = true
+
+    var url = apiPathWithToken("/api/messages/" + encodeURIComponent(sessionId))
+    fetch(url, { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("messages fetch failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        var messages = data && data.messages ? data.messages : []
+        var fp = messages.length + ":" + (messages.length > 0 ? (messages[messages.length - 1].uuid || "") : "")
+
+        if (fp !== state.lastMessageFingerprint) {
+          state.lastMessageFingerprint = fp
+          renderMessagesPreserving(messages)
+
+          // Re-add live indicator after re-render if still polling
+          if (state.messagePollingTimer) {
+            var container = document.getElementById("messages-container")
+            if (container && !container.querySelector(".messages-live-indicator")) {
+              var indicator = document.createElement("div")
+              indicator.className = "messages-live-indicator"
+              var dot = document.createElement("span")
+              dot.className = "messages-live-dot"
+              indicator.appendChild(dot)
+              indicator.appendChild(document.createTextNode("Live"))
+              container.insertBefore(indicator, container.firstChild)
+            }
+          }
+        }
+      })
+      .catch(function (err) {
+        console.error("fetchMessagesIfChanged:", err)
+      })
+      .finally(function () {
+        state.messageFetchInFlight = false
+      })
+  }
+
+  function evaluateMessagePolling() {
+    var task = findTask(state.selectedTaskId)
+    if (!task) { stopMessagePolling(); return }
+
+    var sessionId = getSessionIdForMessages(task)
+    if (!sessionId) { stopMessagePolling(); return }
+
+    var status = effectiveAgentStatus(task)
+    if (status === "running" || status === "thinking") {
+      startMessagePolling(sessionId)
+    } else {
+      // Do one final fetch to get the latest state, then stop
+      if (state.messagePollingTimer) {
+        fetchMessagesIfChanged(sessionId)
+      }
+      stopMessagePolling()
+    }
   }
 
   // ── Lightweight markdown → HTML renderer ─────────────────────
@@ -4179,7 +4288,12 @@
     return role !== "user"
   }
 
-  function renderMessages(messages) {
+  function isNearBottom(container, threshold) {
+    if (!threshold) threshold = 80
+    return container.scrollHeight - container.scrollTop - container.clientHeight < threshold
+  }
+
+  function renderMessages(messages, skipAutoScroll) {
     var container = document.getElementById("messages-container")
     if (!container) return
 
@@ -4263,8 +4377,85 @@
     // Highlight code blocks and add copy buttons
     highlightCodeBlocks(container)
 
-    // Scroll to bottom
-    container.scrollTop = container.scrollHeight
+    // Scroll to bottom (unless caller is preserving scroll position)
+    if (!skipAutoScroll) {
+      container.scrollTop = container.scrollHeight
+    }
+  }
+
+  // ── UI state preservation for live re-renders ──────────────────
+  function captureUIState(container) {
+    var uiState = { expandedGroups: {}, expandedMessages: {} }
+    if (!container) return uiState
+
+    // Capture which collapsed-steps groups are expanded (by ordinal index)
+    var groups = container.querySelectorAll(".collapsed-steps")
+    for (var i = 0; i < groups.length; i++) {
+      var content = groups[i].querySelector(".collapsed-steps-content")
+      if (content && !content.classList.contains("collapsed-steps--hidden")) {
+        uiState.expandedGroups[i] = true
+      }
+    }
+
+    // Capture which message-toggle buttons say "Show less" (expanded)
+    var toggles = container.querySelectorAll(".message-toggle")
+    for (var j = 0; j < toggles.length; j++) {
+      if (toggles[j].textContent === "Show less") {
+        uiState.expandedMessages[j] = true
+      }
+    }
+
+    return uiState
+  }
+
+  function restoreUIState(container, uiState) {
+    if (!container || !uiState) return
+
+    // Re-expand collapsed-steps groups
+    var groups = container.querySelectorAll(".collapsed-steps")
+    for (var i = 0; i < groups.length; i++) {
+      if (uiState.expandedGroups[i]) {
+        var content = groups[i].querySelector(".collapsed-steps-content")
+        var btn = groups[i].querySelector(".collapsed-steps-toggle")
+        if (content) content.classList.remove("collapsed-steps--hidden")
+        if (btn) {
+          var icon = btn.querySelector(".collapsed-steps-icon")
+          if (icon) icon.textContent = "\u25BC"
+        }
+      }
+    }
+
+    // Re-expand user messages
+    var toggles = container.querySelectorAll(".message-toggle")
+    for (var j = 0; j < toggles.length; j++) {
+      if (uiState.expandedMessages[j]) {
+        toggles[j].textContent = "Show less"
+        var contentDiv = toggles[j].previousElementSibling
+        if (contentDiv && contentDiv.classList.contains("message-content--collapsed")) {
+          contentDiv.classList.remove("message-content--collapsed")
+        }
+      }
+    }
+  }
+
+  function renderMessagesPreserving(messages) {
+    var container = document.getElementById("messages-container")
+    if (!container) return
+
+    var wasNearBottom = isNearBottom(container)
+    var savedScroll = container.scrollTop
+    var uiState = captureUIState(container)
+
+    renderMessages(messages, true) // skip auto-scroll
+
+    restoreUIState(container, uiState)
+
+    // Smart scroll: only auto-scroll if user was already near the bottom
+    if (wasNearBottom) {
+      container.scrollTop = container.scrollHeight
+    } else {
+      container.scrollTop = savedScroll
+    }
   }
 
   // ── Analytics tab ──────────────────────────────────────────────
@@ -4828,6 +5019,15 @@
     })
   }
 
+  // ── Page visibility: pause/resume polling ────────────────────────
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      stopMessagePolling()
+    } else {
+      evaluateMessagePolling()
+    }
+  })
+
   // ── Init ──────────────────────────────────────────────────────────
   renderSidebar()
   renderTopBar()
@@ -4850,6 +5050,7 @@
     cm.subscribe("sessions", function () {
       fetchMenuData()
       fetchTasks()
+      setTimeout(evaluateMessagePolling, 500)
     })
 
     // Subscribe to task updates
@@ -4876,6 +5077,7 @@
       fetchMenuData()
       fetchTasks()
       fetchProjects()
+      setTimeout(evaluateMessagePolling, 1000)
     })
 
     cm.connect()
