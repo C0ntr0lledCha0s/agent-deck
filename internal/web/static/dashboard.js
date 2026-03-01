@@ -3044,6 +3044,26 @@
         return
       }
 
+      // Copy button on code blocks
+      var copyBtn = e.target.closest(".copy-btn")
+      if (copyBtn) {
+        var wrapper = copyBtn.closest(".code-block-wrapper")
+        if (wrapper) {
+          var pre = wrapper.querySelector("pre")
+          if (pre) {
+            navigator.clipboard.writeText(pre.textContent).then(function () {
+              copyBtn.textContent = "Copied!"
+              copyBtn.classList.add("copied")
+              setTimeout(function () {
+                copyBtn.textContent = "Copy"
+                copyBtn.classList.remove("copied")
+              }, 1500)
+            })
+          }
+        }
+        return
+      }
+
       // Show more/less button
       var btn = e.target.closest(".show-more-btn")
       if (btn) {
@@ -3069,6 +3089,22 @@
         }
       }
     })
+
+    // Wrap <pre> elements with copy button overlay
+    var pres = container.querySelectorAll("pre")
+    for (var i = 0; i < pres.length; i++) {
+      var pre = pres[i]
+      if (pre.parentElement && pre.parentElement.classList.contains("code-block-wrapper")) continue
+      var wrapper = document.createElement("div")
+      wrapper.className = "code-block-wrapper"
+      pre.parentNode.insertBefore(wrapper, pre)
+      wrapper.appendChild(pre)
+      var btn = document.createElement("button")
+      btn.className = "copy-btn"
+      btn.type = "button"
+      btn.textContent = "Copy"
+      wrapper.appendChild(btn)
+    }
   }
 
   function switchDetailTab(tabName) {
