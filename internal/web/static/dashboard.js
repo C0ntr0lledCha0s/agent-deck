@@ -3924,6 +3924,7 @@
     var html = ""
     var inList = false
     var listType = ""
+    var inSubList = false
 
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i]
@@ -3931,6 +3932,7 @@
       // Headers
       var headerMatch = line.match(/^(#{1,6})\s+(.+)$/)
       if (headerMatch) {
+        if (inSubList) { html += "</ul>"; inSubList = false }
         if (inList) { html += "</" + listType + ">"; inList = false }
         var level = headerMatch[1].length
         html += '<h' + level + '>' + inlineFormat(headerMatch[2]) + '</h' + level + '>'
@@ -3940,31 +3942,44 @@
       // Unordered list items
       var ulMatch = line.match(/^(\s*)[*\-+]\s+(.+)$/)
       if (ulMatch) {
-        if (!inList || listType !== "ul") {
-          if (inList) html += "</" + listType + ">"
-          html += "<ul>"; inList = true; listType = "ul"
+        var indent = ulMatch[1].length
+        if (inList && listType === "ol" && indent >= 2) {
+          // Indented bullet inside an ordered list → nested sub-list
+          if (!inSubList) { html += "<ul>"; inSubList = true }
+          html += '<li>' + inlineFormat(ulMatch[2]) + '</li>'
+        } else {
+          if (inSubList) { html += "</ul>"; inSubList = false }
+          if (!inList || listType !== "ul") {
+            if (inList) html += "</" + listType + ">"
+            html += "<ul>"; inList = true; listType = "ul"
+          }
+          html += '<li>' + inlineFormat(ulMatch[2]) + '</li>'
         }
-        html += '<li>' + inlineFormat(ulMatch[2]) + '</li>'
         continue
       }
 
-      // Ordered list items
-      var olMatch = line.match(/^(\s*)\d+\.\s+(.+)$/)
+      // Ordered list items — capture the number for <ol start="N">
+      var olMatch = line.match(/^(\s*)(\d+)\.\s+(.+)$/)
       if (olMatch) {
+        if (inSubList) { html += "</ul>"; inSubList = false }
+        var olNum = parseInt(olMatch[2], 10)
         if (!inList || listType !== "ol") {
           if (inList) html += "</" + listType + ">"
-          html += "<ol>"; inList = true; listType = "ol"
+          var startAttr = olNum > 1 ? ' start="' + olNum + '"' : ""
+          html += "<ol" + startAttr + ">"; inList = true; listType = "ol"
         }
-        html += '<li>' + inlineFormat(olMatch[2]) + '</li>'
+        html += '<li>' + inlineFormat(olMatch[3]) + '</li>'
         continue
       }
 
-      // Close list if we're no longer in one
+      // Empty lines inside a list: keep the list open (markdown allows
+      // blank lines between list items). Only close when a non-empty,
+      // non-list line is encountered.
       if (inList && line.trim() === "") {
-        html += "</" + listType + ">"; inList = false
         continue
       }
       if (inList && !ulMatch && !olMatch) {
+        if (inSubList) { html += "</ul>"; inSubList = false }
         html += "</" + listType + ">"; inList = false
       }
 
@@ -3983,6 +3998,7 @@
       html += '<p>' + inlineFormat(line) + '</p>'
     }
 
+    if (inSubList) html += "</ul>"
     if (inList) html += "</" + listType + ">"
     return html
   }
