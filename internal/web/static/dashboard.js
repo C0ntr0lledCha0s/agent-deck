@@ -2432,7 +2432,7 @@
     this.pending = false
   }
 
-  // ── Tool Renderers ──────────────────────────────────────────────
+  // ── Tool Renderers (timeline style) ────────────────────────────
   var ToolRenderers = {
     _renderers: Object.create(null),
 
@@ -2444,21 +2444,49 @@
       return this._renderers[name] || this._defaultRenderer
     },
 
+    // Render a single tool call. Called with the toolCallInfo object from
+    // the backend's Tools[] array.
     render: function (name, input, result, augment) {
       var renderer = this.get(name)
-      return renderer(input, result, augment)
+      return renderer(input, result, augment, name)
     },
 
-    _defaultRenderer: function (input, result) {
-      var block = el("div", "tool-block")
-      var header = el("div", "tool-header")
-      var icon = el("span", "tool-icon", "\u2699")
-      header.appendChild(icon)
-      var label = el("span", "tool-command", "Tool Result")
-      header.appendChild(label)
-      block.appendChild(header)
+    // Render a tool from the new Tools[] array format.
+    renderTool: function (tool) {
+      var input = tool.input || null
+      var result = tool.result || null
+      var augment = tool.augment || null
 
-      var body = el("div", "tool-body")
+      // Parse JSON strings to objects if needed.
+      if (typeof input === "string") { try { input = JSON.parse(input) } catch(e) {} }
+      if (typeof result === "string") { try { result = JSON.parse(result) } catch(e) {} }
+      if (typeof augment === "string") { try { augment = JSON.parse(augment) } catch(e) {} }
+
+      var isError = tool.isError || false
+      var statusClass = isError ? "tool-item--error" : (result != null ? "tool-item--success" : "tool-item--pending")
+
+      var item = el("div", "tool-item " + statusClass)
+      var rendered = this.render(tool.name, input, result, augment)
+      item.appendChild(rendered)
+      return item
+    },
+
+    _defaultRenderer: function (input, result, augment, name) {
+      var wrap = document.createDocumentFragment()
+      var header = el("div", "tool-header")
+      var icon = el("span", "tool-status-icon", "\u2699")
+      header.appendChild(icon)
+      var displayName = name || "Tool"
+      // Shorten MCP tool names (e.g. "mcp__server__tool_name" → "tool_name")
+      if (displayName.indexOf("__") !== -1) {
+        var parts = displayName.split("__")
+        displayName = parts[parts.length - 1]
+      }
+      var label = el("span", "tool-name", displayName)
+      header.appendChild(label)
+      wrap.appendChild(header)
+
+      var body = el("div", "tool-body tool-collapsed")
       if (input) {
         var inputPre = document.createElement("pre")
         inputPre.appendChild(document.createTextNode(JSON.stringify(input, null, 2)))
@@ -2466,11 +2494,16 @@
       }
       if (result) {
         var resultPre = document.createElement("pre")
-        resultPre.appendChild(document.createTextNode(JSON.stringify(result, null, 2)))
+        resultPre.appendChild(document.createTextNode(typeof result === "string" ? result : JSON.stringify(result, null, 2)))
         body.appendChild(resultPre)
       }
-      block.appendChild(body)
-      return block
+      wrap.appendChild(body)
+
+      header.addEventListener("click", function () {
+        body.classList.toggle("tool-collapsed")
+      })
+
+      return wrap
     },
   }
 
@@ -2481,155 +2514,313 @@
     return div.innerHTML
   }
 
+  function truncate(s, max) {
+    if (!s) return ""
+    return s.length > max ? s.substring(0, max) + "\u2026" : s
+  }
+
+  function basename(filePath) {
+    if (!filePath) return "unknown"
+    var parts = filePath.split("/")
+    return parts[parts.length - 1] || filePath
+  }
+
   // ── Bash Renderer ──────────────────────────────────────────────
   ToolRenderers.register("Bash", function (input, result, augment) {
-    var block = el("div", "tool-block")
-    var header = el("div", "tool-header")
-
-    var icon = el("span", "tool-icon", "$")
-    header.appendChild(icon)
+    var wrap = document.createDocumentFragment()
 
     var command = input && input.command ? input.command : ""
-    var cmdSpan = el("span", "tool-command")
-    cmdSpan.textContent = command
-    header.appendChild(cmdSpan)
+    var description = input && input.description ? input.description : ""
+    var isError = augment && augment.IsError
 
-    // Error badge if exit code != 0
-    var exitCode = result && result.exitCode != null ? result.exitCode : 0
-    if (exitCode !== 0) {
-      var badge = el("span", "tool-badge tool-badge--error", "exit " + exitCode)
-      header.appendChild(badge)
+    // Header: checkmark + Bash + truncated command
+    var header = el("div", "tool-header")
+    var statusIcon = el("span", "tool-status-icon", isError ? "\u2717" : "\u2713")
+    statusIcon.style.color = isError ? "var(--red)" : "var(--green)"
+    header.appendChild(statusIcon)
+    header.appendChild(el("span", "tool-name", "Bash"))
+    var summaryText = description || truncate(command, 60)
+    header.appendChild(el("span", "tool-summary", summaryText))
+
+    if (isError) {
+      header.appendChild(el("span", "tool-badge tool-badge--error", "error"))
     }
+    wrap.appendChild(header)
 
-    header.style.cursor = "pointer"
-    block.appendChild(header)
-
-    var body = el("div", "tool-body tool-collapsed")
-
-    // stdout
-    var stdout = result && result.stdout ? result.stdout : (result && typeof result === "string" ? result : "")
-    if (stdout) {
-      var stdoutPre = document.createElement("pre")
-      stdoutPre.appendChild(document.createTextNode(stdout))
-      body.appendChild(stdoutPre)
+    // Inline preview: IN / OUT
+    var stdout = ""
+    if (typeof result === "string") {
+      stdout = result
+    } else if (result && result.stdout) {
+      stdout = result.stdout
     }
-
-    // stderr
     var stderr = result && result.stderr ? result.stderr : ""
-    if (stderr) {
-      var stderrPre = document.createElement("pre")
-      stderrPre.className = "tool-stderr"
-      stderrPre.appendChild(document.createTextNode(stderr))
-      body.appendChild(stderrPre)
+
+    if (command || stdout || stderr) {
+      var preview = el("div", "tool-preview")
+      var needsFade = false
+
+      if (command) {
+        var inLine = el("div", "")
+        inLine.appendChild(el("span", "tool-preview-label", "IN"))
+        var cmdPre = document.createElement("pre")
+        cmdPre.appendChild(document.createTextNode(truncate(command, 200)))
+        cmdPre.style.display = "inline"
+        inLine.appendChild(cmdPre)
+        preview.appendChild(inLine)
+      }
+
+      if (stderr) {
+        var errLine = el("div", "")
+        errLine.appendChild(el("span", "tool-preview-label tool-stderr", "ERR"))
+        var errPre = document.createElement("pre")
+        errPre.className = "tool-stderr"
+        errPre.style.display = "inline"
+        errPre.appendChild(document.createTextNode(truncate(stderr, 400)))
+        errLine.appendChild(errPre)
+        preview.appendChild(errLine)
+        if (stderr.length > 400) needsFade = true
+      } else if (stdout) {
+        var outLine = el("div", "")
+        outLine.appendChild(el("span", "tool-preview-label", "OUT"))
+        var outPre = document.createElement("pre")
+        outPre.style.display = "inline"
+        outPre.appendChild(document.createTextNode(truncate(stdout, 400)))
+        outLine.appendChild(outPre)
+        preview.appendChild(outLine)
+        if (stdout.length > 400) needsFade = true
+      } else {
+        preview.appendChild(el("span", "tool-empty", "No output"))
+      }
+
+      if (needsFade) preview.classList.add("tool-preview--faded")
+      wrap.appendChild(preview)
     }
 
-    block.appendChild(body)
+    // Full body (hidden, toggled by clicking header)
+    var body = el("div", "tool-body tool-collapsed")
+    if (command) {
+      var fullCmdPre = document.createElement("pre")
+      fullCmdPre.appendChild(document.createTextNode("$ " + command))
+      body.appendChild(fullCmdPre)
+    }
+    if (stdout) {
+      var fullOutPre = document.createElement("pre")
+      fullOutPre.appendChild(document.createTextNode(stdout))
+      body.appendChild(fullOutPre)
+    }
+    if (stderr) {
+      var fullErrPre = document.createElement("pre")
+      fullErrPre.className = "tool-stderr"
+      fullErrPre.appendChild(document.createTextNode(stderr))
+      body.appendChild(fullErrPre)
+    }
+    wrap.appendChild(body)
 
     header.addEventListener("click", function () {
       body.classList.toggle("tool-collapsed")
     })
 
-    return block
+    return wrap
   })
 
   // ── Edit Renderer ──────────────────────────────────────────────
   ToolRenderers.register("Edit", function (input, result, augment) {
-    var block = el("div", "tool-block")
+    var wrap = document.createDocumentFragment()
+
+    var filename = input && (input.file_path || input.filePath) ? (input.file_path || input.filePath) : "unknown"
+
+    // Header: checkmark + Edit + basename + add/del badges
     var header = el("div", "tool-header")
+    header.appendChild(el("span", "tool-status-icon tool-status-icon--success", "\u2713"))
+    header.firstChild.style.color = "var(--green)"
+    header.appendChild(el("span", "tool-name", "Edit"))
+    header.appendChild(el("span", "tool-summary", basename(filename)))
 
-    var icon = el("span", "tool-icon", "\u270E")
-    header.appendChild(icon)
-
-    var filename = input && input.file_path ? input.file_path : (input && input.filePath ? input.filePath : "unknown")
-    var fnSpan = el("span", "tool-filename")
-    fnSpan.textContent = filename
-    header.appendChild(fnSpan)
-
-    // +N / -N badges from augment
     if (augment) {
-      if (augment.additions != null && augment.additions > 0) {
-        var addBadge = el("span", "tool-badge tool-badge--add", "+" + augment.additions)
-        header.appendChild(addBadge)
+      if (augment.Additions > 0 || augment.additions > 0) {
+        header.appendChild(el("span", "tool-badge tool-badge--add", "+" + (augment.Additions || augment.additions)))
       }
-      if (augment.deletions != null && augment.deletions > 0) {
-        var delBadge = el("span", "tool-badge tool-badge--del", "-" + augment.deletions)
-        header.appendChild(delBadge)
+      if (augment.Deletions > 0 || augment.deletions > 0) {
+        header.appendChild(el("span", "tool-badge tool-badge--del", "-" + (augment.Deletions || augment.deletions)))
       }
     }
+    wrap.appendChild(header)
 
-    header.style.cursor = "pointer"
-    block.appendChild(header)
-
-    var body = el("div", "tool-body tool-collapsed")
-
-    // Server-rendered diff HTML (pre-sanitized by Go server's escapeHTML)
-    if (augment && augment.diffHtml) {
+    // Inline diff preview (visible by default, max 8 lines)
+    var diffHtml = augment && (augment.DiffHTML || augment.diffHtml) ? (augment.DiffHTML || augment.diffHtml) : ""
+    if (diffHtml) {
+      var preview = el("div", "tool-preview tool-preview--faded")
       var diffContainer = document.createElement("div")
       diffContainer.setAttribute("data-server-rendered", "true")
       // Safe: diffHtml is pre-sanitized by server-side escapeHTML()
-      diffContainer.insertAdjacentHTML("beforeend", augment.diffHtml)
-      body.appendChild(diffContainer)
+      diffContainer.insertAdjacentHTML("beforeend", diffHtml)
+      preview.appendChild(diffContainer)
+      wrap.appendChild(preview)
+    }
+
+    // Full body (hidden)
+    var body = el("div", "tool-body tool-collapsed")
+    if (diffHtml) {
+      var fullDiff = document.createElement("div")
+      fullDiff.setAttribute("data-server-rendered", "true")
+      fullDiff.insertAdjacentHTML("beforeend", diffHtml)
+      body.appendChild(fullDiff)
     } else if (result) {
       var resultPre = document.createElement("pre")
       resultPre.appendChild(document.createTextNode(typeof result === "string" ? result : JSON.stringify(result, null, 2)))
       body.appendChild(resultPre)
     }
-
-    block.appendChild(body)
+    wrap.appendChild(body)
 
     header.addEventListener("click", function () {
       body.classList.toggle("tool-collapsed")
     })
 
-    return block
+    return wrap
   })
 
   // ── Read Renderer ──────────────────────────────────────────────
   ToolRenderers.register("Read", function (input, result, augment) {
-    var block = el("div", "tool-block")
+    var wrap = document.createDocumentFragment()
+
+    var filename = input && (input.file_path || input.filePath) ? (input.file_path || input.filePath) : "unknown"
+    var content = typeof result === "string" ? result : ""
+    var lineCount = augment && (augment.LineCount || augment.lineCount) ? (augment.LineCount || augment.lineCount) : (content ? content.split("\n").length : 0)
+
+    // Header: checkmark + Read + basename + line count
     var header = el("div", "tool-header")
-
-    var icon = el("span", "tool-icon", "\uD83D\uDCC4")
-    header.appendChild(icon)
-
-    var filename = input && input.file_path ? input.file_path : (input && input.filePath ? input.filePath : "unknown")
-    var fnSpan = el("span", "tool-filename")
-    fnSpan.textContent = filename
-    header.appendChild(fnSpan)
-
-    // Line count badge
-    var content = result && typeof result === "string" ? result : ""
-    if (content) {
-      var lines = content.split("\n").length
-      var linesBadge = el("span", "tool-badge", lines + " lines")
-      header.appendChild(linesBadge)
+    header.appendChild(el("span", "tool-status-icon", "\u2713"))
+    header.firstChild.style.color = "var(--green)"
+    header.appendChild(el("span", "tool-name", "Read"))
+    header.appendChild(el("span", "tool-summary", basename(filename)))
+    if (lineCount > 0) {
+      header.appendChild(el("span", "tool-badge", lineCount + " lines"))
     }
+    wrap.appendChild(header)
 
-    header.style.cursor = "pointer"
-    block.appendChild(header)
-
+    // No inline preview for Read (low signal) — expand on click
     var body = el("div", "tool-body tool-collapsed")
-
-    // Server-rendered highlighted content from augment
-    if (augment && augment.highlightedHtml) {
+    var highlightedHtml = augment && (augment.ContentHTML || augment.highlightedHtml || augment.contentHtml)
+    if (highlightedHtml) {
       var hlContainer = document.createElement("div")
       hlContainer.setAttribute("data-server-rendered", "true")
-      // Safe: highlightedHtml is pre-sanitized by server-side escapeHTML()
-      hlContainer.insertAdjacentHTML("beforeend", augment.highlightedHtml)
+      hlContainer.insertAdjacentHTML("beforeend", highlightedHtml)
       body.appendChild(hlContainer)
     } else if (content) {
       var contentPre = document.createElement("pre")
       contentPre.appendChild(document.createTextNode(content))
       body.appendChild(contentPre)
     }
-
-    block.appendChild(body)
+    wrap.appendChild(body)
 
     header.addEventListener("click", function () {
       body.classList.toggle("tool-collapsed")
     })
 
-    return block
+    return wrap
+  })
+
+  // ── Grep Renderer ──────────────────────────────────────────────
+  ToolRenderers.register("Grep", function (input, result, augment) {
+    var wrap = document.createDocumentFragment()
+    var pattern = input && input.pattern ? input.pattern : ""
+    var content = typeof result === "string" ? result : ""
+    var matchLines = content ? content.split("\n").filter(function(l) { return l.trim() }) : []
+
+    var header = el("div", "tool-header")
+    header.appendChild(el("span", "tool-status-icon", "\u2713"))
+    header.firstChild.style.color = "var(--green)"
+    header.appendChild(el("span", "tool-name", "Grep"))
+    header.appendChild(el("span", "tool-summary", '"' + truncate(pattern, 40) + '"'))
+    if (matchLines.length > 0) {
+      header.appendChild(el("span", "tool-badge", matchLines.length + " matches"))
+    }
+    wrap.appendChild(header)
+
+    // Preview first 4 matches
+    if (matchLines.length > 0) {
+      var preview = el("div", "tool-preview" + (matchLines.length > 4 ? " tool-preview--faded" : ""))
+      var previewPre = document.createElement("pre")
+      previewPre.appendChild(document.createTextNode(matchLines.slice(0, 4).join("\n")))
+      preview.appendChild(previewPre)
+      wrap.appendChild(preview)
+    }
+
+    var body = el("div", "tool-body tool-collapsed")
+    if (content) {
+      var fullPre = document.createElement("pre")
+      fullPre.appendChild(document.createTextNode(content))
+      body.appendChild(fullPre)
+    }
+    wrap.appendChild(body)
+
+    header.addEventListener("click", function () {
+      body.classList.toggle("tool-collapsed")
+    })
+    return wrap
+  })
+
+  // ── Write Renderer ─────────────────────────────────────────────
+  ToolRenderers.register("Write", function (input, result) {
+    var wrap = document.createDocumentFragment()
+    var filename = input && (input.file_path || input.filePath) ? (input.file_path || input.filePath) : "unknown"
+    var content = input && input.content ? input.content : ""
+    var lineCount = content ? content.split("\n").length : 0
+
+    var header = el("div", "tool-header")
+    header.appendChild(el("span", "tool-status-icon", "\u2713"))
+    header.firstChild.style.color = "var(--green)"
+    header.appendChild(el("span", "tool-name", "Write"))
+    header.appendChild(el("span", "tool-summary", basename(filename)))
+    if (lineCount > 0) {
+      header.appendChild(el("span", "tool-badge", lineCount + " lines"))
+    }
+    wrap.appendChild(header)
+
+    var body = el("div", "tool-body tool-collapsed")
+    if (content) {
+      var contentPre = document.createElement("pre")
+      contentPre.appendChild(document.createTextNode(content))
+      body.appendChild(contentPre)
+    }
+    wrap.appendChild(body)
+
+    header.addEventListener("click", function () {
+      body.classList.toggle("tool-collapsed")
+    })
+    return wrap
+  })
+
+  // ── Glob Renderer ──────────────────────────────────────────────
+  ToolRenderers.register("Glob", function (input, result) {
+    var wrap = document.createDocumentFragment()
+    var pattern = input && input.pattern ? input.pattern : ""
+    var content = typeof result === "string" ? result : ""
+    var files = content ? content.split("\n").filter(function(l) { return l.trim() }) : []
+
+    var header = el("div", "tool-header")
+    header.appendChild(el("span", "tool-status-icon", "\u2713"))
+    header.firstChild.style.color = "var(--green)"
+    header.appendChild(el("span", "tool-name", "Glob"))
+    header.appendChild(el("span", "tool-summary", '"' + truncate(pattern, 40) + '"'))
+    if (files.length > 0) {
+      header.appendChild(el("span", "tool-badge", files.length + " files"))
+    }
+    wrap.appendChild(header)
+
+    var body = el("div", "tool-body tool-collapsed")
+    if (content) {
+      var fullPre = document.createElement("pre")
+      fullPre.appendChild(document.createTextNode(content))
+      body.appendChild(fullPre)
+    }
+    wrap.appendChild(body)
+
+    header.addEventListener("click", function () {
+      body.classList.toggle("tool-collapsed")
+    })
+    return wrap
   })
 
   // ── Terminal management ───────────────────────────────────────────
@@ -3674,8 +3865,23 @@
         msgBlock.appendChild(contentDiv)
       }
 
-      // Tool result rendering
-      if (msg.toolName) {
+      // New Tools[] array rendering (from backend tool extraction)
+      if (msg.tools && msg.tools.length > 0) {
+        var toolsContainer = el("div", "tool-items")
+        for (var j = 0; j < msg.tools.length; j++) {
+          try {
+            var toolItem = ToolRenderers.renderTool(msg.tools[j])
+            toolsContainer.appendChild(toolItem)
+          } catch (err) {
+            console.error("ToolRenderers.renderTool failed for", msg.tools[j].name, err)
+            toolsContainer.appendChild(el("div", "tool-item tool-item--error", "[tool: " + msg.tools[j].name + "]"))
+          }
+        }
+        msgBlock.appendChild(toolsContainer)
+      }
+
+      // Legacy single-tool rendering (backward compat)
+      if (!msg.tools && msg.toolName) {
         try {
           var toolEl = ToolRenderers.render(
             msg.toolName,
@@ -3683,10 +3889,13 @@
             msg.toolResult || null,
             msg.augment || null
           )
-          msgBlock.appendChild(toolEl)
+          var legacyItem = el("div", "tool-items")
+          var legacyWrap = el("div", "tool-item tool-item--success")
+          legacyWrap.appendChild(toolEl)
+          legacyItem.appendChild(legacyWrap)
+          msgBlock.appendChild(legacyItem)
         } catch (err) {
           console.error("ToolRenderers.render failed for", msg.toolName, err)
-          msgBlock.appendChild(el("div", "tool-block", "[tool: " + msg.toolName + "]"))
         }
       }
 

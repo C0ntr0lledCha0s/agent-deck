@@ -200,6 +200,105 @@ func TestMessagesE2E_ConversationRendering(t *testing.T) {
 	})
 }
 
+// TestMessagesE2E_ToolCallExtraction tests that tool_use and tool_result
+// content blocks are extracted and returned in the Tools array.
+func TestMessagesE2E_ToolCallExtraction(t *testing.T) {
+	claudeDir := t.TempDir()
+	projectPath := "/home/testuser/tools"
+
+	entries := []map[string]any{
+		{
+			"uuid":       "t-001",
+			"parentUuid": "",
+			"timestamp":  "2026-02-28T10:00:00Z",
+			"type":       "human",
+			"message": map[string]any{
+				"role":    "user",
+				"content": "Check git status",
+			},
+		},
+		{
+			"uuid":       "t-002",
+			"parentUuid": "t-001",
+			"timestamp":  "2026-02-28T10:00:05Z",
+			"type":       "assistant",
+			"message": map[string]any{
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "text", "text": "Let me check that for you."},
+					{"type": "tool_use", "id": "toolu_bash1", "name": "Bash", "input": map[string]any{"command": "git status"}},
+				},
+			},
+		},
+		{
+			"uuid":       "t-003",
+			"parentUuid": "t-002",
+			"timestamp":  "2026-02-28T10:00:06Z",
+			"type":       "human",
+			"message": map[string]any{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "tool_result", "tool_use_id": "toolu_bash1", "content": "On branch main\nnothing to commit"},
+				},
+			},
+		},
+		{
+			"uuid":       "t-004",
+			"parentUuid": "t-003",
+			"timestamp":  "2026-02-28T10:00:10Z",
+			"type":       "assistant",
+			"message": map[string]any{
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "text", "text": "Your branch is clean."},
+				},
+			},
+		},
+	}
+
+	writeTestJSONL(t, claudeDir, projectPath, entries)
+	srv := newServerWithMessages(t, "sess-tools", projectPath, claudeDir)
+	handler := srv.Handler()
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/messages/sess-tools", nil))
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var resp messagesResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+
+	// Tool-result-only user message (t-003) should be suppressed.
+	require.Len(t, resp.Messages, 3, "tool-result-only user message should be suppressed")
+
+	// First message: plain user text.
+	assert.Equal(t, "user", resp.Messages[0].Role)
+	assert.Equal(t, "Check git status", resp.Messages[0].Content)
+	assert.Empty(t, resp.Messages[0].Tools)
+
+	// Second message: assistant with text + tool_use, result matched.
+	assert.Equal(t, "assistant", resp.Messages[1].Role)
+	assert.Equal(t, "Let me check that for you.", resp.Messages[1].Content)
+	require.Len(t, resp.Messages[1].Tools, 1)
+	assert.Equal(t, "toolu_bash1", resp.Messages[1].Tools[0].ID)
+	assert.Equal(t, "Bash", resp.Messages[1].Tools[0].Name)
+	assert.False(t, resp.Messages[1].Tools[0].IsError)
+
+	// Verify tool input contains the command.
+	var input map[string]string
+	require.NoError(t, json.Unmarshal(resp.Messages[1].Tools[0].Input, &input))
+	assert.Equal(t, "git status", input["command"])
+
+	// Verify tool result contains the output.
+	var resultStr string
+	require.NoError(t, json.Unmarshal(resp.Messages[1].Tools[0].Result, &resultStr))
+	assert.Contains(t, resultStr, "On branch main")
+
+	// Third message: assistant summary, no tools.
+	assert.Equal(t, "assistant", resp.Messages[2].Role)
+	assert.Equal(t, "Your branch is clean.", resp.Messages[2].Content)
+	assert.Empty(t, resp.Messages[2].Tools)
+}
+
 // TestMessagesE2E_BranchedConversation tests DAG branch resolution: when a
 // conversation has branches (user edited a message), the API returns the most
 // recent branch.

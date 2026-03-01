@@ -13,9 +13,20 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/dag"
 )
 
+// toolCallInfo represents a single tool invocation and its result,
+// sent as part of an assistant message's Tools array.
+type toolCallInfo struct {
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Input   json.RawMessage `json:"input,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	IsError bool            `json:"isError,omitempty"`
+	Augment json.RawMessage `json:"augment,omitempty"`
+}
+
 // augmentedMessage is the wire format for a single conversation message
 // returned by the /api/messages/{id} endpoint. It wraps dag.SessionMessage
-// with additional fields for tool augmentation (populated in a future step).
+// with tool call data grouped into the Tools array for assistant messages.
 type augmentedMessage struct {
 	UUID       string          `json:"uuid"`
 	ParentUUID string          `json:"parentUuid"`
@@ -23,6 +34,8 @@ type augmentedMessage struct {
 	Role       string          `json:"role"`
 	Timestamp  time.Time       `json:"timestamp"`
 	Content    string          `json:"content"`
+	Tools      []toolCallInfo  `json:"tools,omitempty"`
+	// Legacy single-tool fields (kept for backward compatibility).
 	ToolName   string          `json:"toolName,omitempty"`
 	ToolInput  json.RawMessage `json:"toolInput,omitempty"`
 	ToolResult json.RawMessage `json:"toolResult,omitempty"`
@@ -141,18 +154,8 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build augmented messages (tool augmentation is a future step).
-	msgs := make([]augmentedMessage, 0, len(result.Messages))
-	for _, m := range result.Messages {
-		msgs = append(msgs, augmentedMessage{
-			UUID:       m.UUID,
-			ParentUUID: m.ParentUUID,
-			Type:       m.Type,
-			Role:       m.Role,
-			Timestamp:  m.Timestamp,
-			Content:    m.Content,
-		})
-	}
+	// Build augmented messages with tool call data.
+	msgs := buildAugmentedMessages(result.Messages)
 
 	writeJSON(w, http.StatusOK, messagesResponse{
 		SessionID: sessionID,
@@ -213,6 +216,144 @@ func encodeProjectPath(path string) string {
 	encoded := strings.ReplaceAll(trimmed, "/", "-")
 	encoded = strings.ReplaceAll(encoded, ".", "-")
 	return "-" + encoded
+}
+
+// buildAugmentedMessages converts dag.SessionMessages into the wire format,
+// matching tool_use blocks in assistant messages with their tool_result blocks
+// in subsequent user messages. User messages that contain only tool_result
+// blocks (no text) are suppressed from output to avoid empty rows.
+func buildAugmentedMessages(dagMsgs []dag.SessionMessage) []augmentedMessage {
+	// Index tool results by tool_use_id from all user messages.
+	resultMap := make(map[string]dag.ToolResultBlock)
+	for _, m := range dagMsgs {
+		for _, tr := range m.ToolResultBlocks {
+			resultMap[tr.ToolUseID] = tr
+		}
+	}
+
+	msgs := make([]augmentedMessage, 0, len(dagMsgs))
+	for _, m := range dagMsgs {
+		// Skip user messages that are purely tool_result containers (no text).
+		if m.Role == "user" && m.Content == "" && len(m.ToolResultBlocks) > 0 {
+			continue
+		}
+
+		am := augmentedMessage{
+			UUID:       m.UUID,
+			ParentUUID: m.ParentUUID,
+			Type:       m.Type,
+			Role:       m.Role,
+			Timestamp:  m.Timestamp,
+			Content:    m.Content,
+		}
+
+		// For assistant messages with tool_use blocks, build the Tools array.
+		if len(m.ToolUseBlocks) > 0 {
+			tools := make([]toolCallInfo, 0, len(m.ToolUseBlocks))
+			for _, tu := range m.ToolUseBlocks {
+				tc := toolCallInfo{
+					ID:    tu.ID,
+					Name:  tu.Name,
+					Input: tu.Input,
+				}
+
+				// Match with result.
+				if tr, ok := resultMap[tu.ID]; ok {
+					if tr.Content != "" {
+						resultJSON, _ := json.Marshal(tr.Content)
+						tc.Result = resultJSON
+					}
+					tc.IsError = tr.IsError
+				}
+
+				// Compute augments for known tool types.
+				tc.Augment = computeToolAugment(tc.Name, tc.Input, tc.Result)
+
+				tools = append(tools, tc)
+			}
+			am.Tools = tools
+		}
+
+		msgs = append(msgs, am)
+	}
+
+	return msgs
+}
+
+// computeToolAugment computes server-side augmentation for known tool types,
+// returning the JSON-encoded augment or nil if not applicable.
+func computeToolAugment(name string, input, result json.RawMessage) json.RawMessage {
+	switch name {
+	case "Bash":
+		return computeBashToolAugment(input, result)
+	case "Read":
+		return computeReadToolAugment(input, result)
+	case "Edit":
+		return computeEditToolAugment(input, result)
+	default:
+		return nil
+	}
+}
+
+// computeBashToolAugment computes augmentation for Bash tool calls.
+func computeBashToolAugment(input, result json.RawMessage) json.RawMessage {
+	var stdout string
+	if result != nil {
+		_ = json.Unmarshal(result, &stdout)
+	}
+	if stdout == "" {
+		return nil
+	}
+	aug := computeBashAugment(stdout, "", 0)
+	b, _ := json.Marshal(aug)
+	return b
+}
+
+// computeReadToolAugment computes augmentation for Read tool calls.
+func computeReadToolAugment(input, result json.RawMessage) json.RawMessage {
+	var content string
+	if result != nil {
+		_ = json.Unmarshal(result, &content)
+	}
+	if content == "" {
+		return nil
+	}
+
+	var inp struct {
+		FilePath string `json:"file_path"`
+	}
+	if input != nil {
+		_ = json.Unmarshal(input, &inp)
+	}
+
+	aug, err := computeReadAugment(content, inp.FilePath)
+	if err != nil {
+		return nil
+	}
+	b, _ := json.Marshal(aug)
+	return b
+}
+
+// computeEditToolAugment computes augmentation for Edit tool calls.
+func computeEditToolAugment(input, result json.RawMessage) json.RawMessage {
+	var inp struct {
+		FilePath  string `json:"file_path"`
+		OldString string `json:"old_string"`
+		NewString string `json:"new_string"`
+	}
+	if input != nil {
+		_ = json.Unmarshal(input, &inp)
+	}
+	if inp.OldString == "" && inp.NewString == "" {
+		return nil
+	}
+
+	aug, err := computeEditAugment(inp.OldString, inp.NewString, inp.FilePath)
+	if err != nil {
+		return nil
+	}
+	b, _ := json.Marshal(aug)
+	return b
 }
 
 // tmuxPaneCurrentPath returns the working directory of a tmux session's active

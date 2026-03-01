@@ -14,16 +14,32 @@ import (
 // maxLineSize is the maximum line buffer size for reading JSONL files (10 MB).
 const maxLineSize = 10 * 1024 * 1024
 
+// ToolUseBlock represents a tool_use content block from an assistant message.
+type ToolUseBlock struct {
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input,omitempty"`
+}
+
+// ToolResultBlock represents a tool_result content block from a user message.
+type ToolResultBlock struct {
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
 // SessionMessage represents a parsed conversation message from the active branch.
 type SessionMessage struct {
-	UUID       string
-	ParentUUID string
-	Type       string
-	Role       string
-	Content    string
-	Message    json.RawMessage
-	Timestamp  time.Time
-	LineIndex  int
+	UUID             string
+	ParentUUID       string
+	Type             string
+	Role             string
+	Content          string
+	ToolUseBlocks    []ToolUseBlock
+	ToolResultBlocks []ToolResultBlock
+	Message          json.RawMessage
+	Timestamp        time.Time
+	LineIndex        int
 }
 
 // SessionReadResult contains the active branch messages plus DAG metadata.
@@ -81,16 +97,18 @@ func ReadSessionFull(sessionDir string) (*SessionReadResult, error) {
 	msgs := make([]SessionMessage, 0, len(dagResult.ActiveBranch))
 	for _, node := range dagResult.ActiveBranch {
 		e := node.Entry
-		role, content := extractRoleContent(e.Message)
+		role, content, toolUses, toolResults := extractRoleContent(e.Message)
 		msgs = append(msgs, SessionMessage{
-			UUID:       e.UUID,
-			ParentUUID: e.ParentUUID,
-			Type:       e.Type,
-			Role:       role,
-			Content:    content,
-			Message:    e.Message,
-			Timestamp:  e.Timestamp,
-			LineIndex:  e.LineIndex,
+			UUID:             e.UUID,
+			ParentUUID:       e.ParentUUID,
+			Type:             e.Type,
+			Role:             role,
+			Content:          content,
+			ToolUseBlocks:    toolUses,
+			ToolResultBlocks: toolResults,
+			Message:          e.Message,
+			Timestamp:        e.Timestamp,
+			LineIndex:        e.LineIndex,
 		})
 	}
 
@@ -187,11 +205,13 @@ func parseJSONL(path string) ([]Entry, error) {
 	return entries, nil
 }
 
-// extractRoleContent extracts role and text content from a message JSON blob.
+// extractRoleContent extracts role, text content, and tool blocks from a
+// message JSON blob.
 // The message format is: {"role": "...", "content": "..." or [...]}
-func extractRoleContent(msg json.RawMessage) (role, content string) {
+// Content arrays may contain text, tool_use, and tool_result blocks.
+func extractRoleContent(msg json.RawMessage) (role, content string, toolUses []ToolUseBlock, toolResults []ToolResultBlock) {
 	if len(msg) == 0 {
-		return "", ""
+		return "", "", nil, nil
 	}
 
 	var parsed struct {
@@ -199,34 +219,105 @@ func extractRoleContent(msg json.RawMessage) (role, content string) {
 		Content json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(msg, &parsed); err != nil {
-		return "", ""
+		return "", "", nil, nil
 	}
 	role = parsed.Role
 
 	if len(parsed.Content) == 0 {
-		return role, ""
+		return role, "", nil, nil
 	}
 
 	// Content can be a plain string.
 	var s string
 	if err := json.Unmarshal(parsed.Content, &s); err == nil {
-		return role, s
+		return role, s, nil, nil
 	}
 
-	// Content can be an array of content blocks.
+	// Content can be an array of content blocks (text, tool_use, tool_result).
+	var blocks []json.RawMessage
+	if err := json.Unmarshal(parsed.Content, &blocks); err != nil {
+		return role, "", nil, nil
+	}
+
+	var texts []string
+	for _, raw := range blocks {
+		var base struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &base); err != nil {
+			continue
+		}
+
+		switch base.Type {
+		case "text":
+			var tb struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(raw, &tb) == nil && tb.Text != "" {
+				texts = append(texts, tb.Text)
+			}
+
+		case "tool_use":
+			var tu struct {
+				ID    string          `json:"id"`
+				Name  string          `json:"name"`
+				Input json.RawMessage `json:"input"`
+			}
+			if json.Unmarshal(raw, &tu) == nil && tu.Name != "" {
+				toolUses = append(toolUses, ToolUseBlock{
+					ID:    tu.ID,
+					Name:  tu.Name,
+					Input: tu.Input,
+				})
+			}
+
+		case "tool_result":
+			var tr struct {
+				ToolUseID string          `json:"tool_use_id"`
+				Content   json.RawMessage `json:"content"`
+				IsError   bool            `json:"is_error"`
+			}
+			if json.Unmarshal(raw, &tr) == nil {
+				resultContent := extractToolResultContent(tr.Content)
+				toolResults = append(toolResults, ToolResultBlock{
+					ToolUseID: tr.ToolUseID,
+					Content:   resultContent,
+					IsError:   tr.IsError,
+				})
+			}
+		}
+	}
+
+	return role, strings.Join(texts, "\n"), toolUses, toolResults
+}
+
+// extractToolResultContent extracts text from a tool_result content field,
+// which can be a plain string, a content block array, or null.
+func extractToolResultContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	// Try plain string first.
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+
+	// Try array of content blocks (e.g. [{"type":"text","text":"..."}]).
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	if err := json.Unmarshal(parsed.Content, &blocks); err == nil {
+	if json.Unmarshal(raw, &blocks) == nil {
 		var texts []string
 		for _, b := range blocks {
 			if b.Text != "" {
 				texts = append(texts, b.Text)
 			}
 		}
-		return role, strings.Join(texts, "\n")
+		return strings.Join(texts, "\n")
 	}
 
-	return role, ""
+	return ""
 }
