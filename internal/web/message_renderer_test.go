@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"testing"
 
@@ -326,6 +327,23 @@ func TestPairToolResults_BashOutputPlain(t *testing.T) {
 	paired := pairToolResults(blocks)
 	require.Len(t, paired, 1)
 	assert.Equal(t, template.HTML("hi"), paired[0].ToolResultHTML)
+}
+
+func TestRenderMessagesHTML_TruncatedUserContainsFullText(t *testing.T) {
+	longText := ""
+	for i := 0; i < 20; i++ {
+		longText += fmt.Sprintf("Line %d of the message\n", i+1)
+	}
+	turns := []renderedTurn{
+		{Role: "user", Blocks: []contentBlock{{Type: "text", Text: longText}}},
+	}
+	html, err := renderMessagesHTML(turns)
+	require.NoError(t, err)
+	// The full text must be in the DOM (not truncated)
+	assert.Contains(t, html, "Line 20")
+	assert.Contains(t, html, "Line 1")
+	assert.Contains(t, html, "collapsible-text")
+	assert.Contains(t, html, "show-more-btn")
 }
 
 func TestRenderMessagesHTML_MarkdownXSS(t *testing.T) {

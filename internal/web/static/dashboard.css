@@ -1807,6 +1807,7 @@
 .collapsible-text .truncated-content {
   position: relative;
   overflow: hidden;
+  max-height: 200px;
 }
 
 .collapsible-text .fade-overlay {

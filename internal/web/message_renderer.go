@@ -354,13 +354,6 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 	"toolInputSummary": toolInputSummary,
 	"markdown":         renderMarkdown,
 	"cleanUser":        cleanUserText,
-	"truncateLines": func(s string, maxLines int) string {
-		lines := strings.Split(s, "\n")
-		if len(lines) <= maxLines {
-			return s
-		}
-		return strings.Join(lines[:maxLines], "\n")
-	},
 	"needsTruncation": func(s string) bool {
 		lines := strings.Split(s, "\n")
 		return len(lines) > 12 || len(s) > 1200
@@ -371,7 +364,7 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 	`<div class="message message-user-prompt">` +
 	`<div class="message-content">` +
 	`{{range .Blocks}}{{if eq .Type "text"}}{{$clean := cleanUser .Text}}` +
-	`{{if needsTruncation $clean}}<div class="text-block collapsible-text"><div class="truncated-content">{{truncateLines $clean 12}}<div class="fade-overlay"></div></div><button class="show-more-btn" type="button">Show more</button></div>` +
+	`{{if needsTruncation $clean}}<div class="text-block collapsible-text"><div class="truncated-content">{{$clean}}<div class="fade-overlay"></div></div><button class="show-more-btn" type="button">Show more</button></div>` +
 	`{{else}}<div class="text-block">{{$clean}}</div>{{end}}` +
 	`{{end}}{{end}}` +
 	`</div></div></div>` +
