@@ -4,6 +4,8 @@ services:
     image: agent-deck:latest
     container_name: agent-deck
     restart: unless-stopped
+    group_add:
+      - "${DOCKER_GID:-999}"
     ports:
       - "8420:8420"
     volumes:
