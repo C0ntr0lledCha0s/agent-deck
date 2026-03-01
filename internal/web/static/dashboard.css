@@ -1986,6 +1986,21 @@ details[open] > .collapsible__summary .collapsible__icon {
   color: var(--red);
 }
 
+/* ── Collapsed middle blocks ─────────────────────────────────── */
+
+.collapsed-middle-summary {
+  cursor: pointer;
+  padding: 2px 4px;
+  color: var(--muted);
+  font-size: 13px;
+  border-radius: 2px;
+}
+
+.collapsed-middle-summary:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 /* ── Copy button on code blocks ──────────────────────────────── */
 
 .code-block-wrapper {

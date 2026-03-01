@@ -360,3 +360,39 @@ func TestRenderMessagesHTML_MarkdownXSS(t *testing.T) {
 	// CSP headers provide the XSS boundary.
 	assert.Contains(t, html, "Safe text")
 }
+
+func TestRenderMessagesHTML_CollapsesLongTurns(t *testing.T) {
+	// Create a turn with >8 blocks: text + 10 tools + text
+	blocks := []contentBlock{
+		{Type: "text", Text: "I'll start working on this."},
+	}
+	for i := 0; i < 10; i++ {
+		blocks = append(blocks, contentBlock{
+			Type: "tool_use", ToolName: "Edit", ToolUseID: fmt.Sprintf("t%d", i),
+			ToolInput: json.RawMessage(`{"file_path":"f.go","old_string":"a","new_string":"b"}`),
+		})
+	}
+	blocks = append(blocks, contentBlock{Type: "text", Text: "All done, tests pass."})
+
+	turns := []renderedTurn{{Role: "assistant", Blocks: blocks}}
+	html, err := renderMessagesHTML(turns)
+	require.NoError(t, err)
+	assert.Contains(t, html, "collapsed-middle")
+	assert.Contains(t, html, "collapsed-middle-summary")
+	assert.Contains(t, html, "10 tool calls")
+	// First and last text blocks should be outside the collapsed section
+	assert.Contains(t, html, "start working on this")
+	assert.Contains(t, html, "All done, tests pass.")
+}
+
+func TestRenderMessagesHTML_NoCollapseShortTurns(t *testing.T) {
+	blocks := []contentBlock{
+		{Type: "text", Text: "hello"},
+		{Type: "tool_use", ToolName: "Bash", ToolUseID: "t1"},
+		{Type: "text", Text: "done"},
+	}
+	turns := []renderedTurn{{Role: "assistant", Blocks: blocks}}
+	html, err := renderMessagesHTML(turns)
+	require.NoError(t, err)
+	assert.NotContains(t, html, "collapsed-middle")
+}

@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"regexp"
 	"strings"
@@ -122,9 +123,14 @@ type dagMessage struct {
 
 // renderedTurn represents a grouped conversation turn for template rendering.
 type renderedTurn struct {
-	Role   string
-	Blocks []contentBlock
-	Time   time.Time
+	Role            string
+	Blocks          []contentBlock // all blocks (used for short turns)
+	HeadBlocks      []contentBlock // first text block(s) — visible
+	MiddleBlocks    []contentBlock // collapsed middle
+	TailBlocks      []contentBlock // last text + trailing — visible
+	MiddleToolCount int            // number of tool calls in middle (for summary)
+	Collapsed       bool           // true if this turn uses collapse
+	Time            time.Time
 }
 
 // groupIntoTurns groups messages into conversation turns following
@@ -246,6 +252,53 @@ func highlightToolOutput(toolName string, input json.RawMessage, text string) te
 	return template.HTML(template.HTMLEscapeString(text))
 }
 
+const collapseThreshold = 8
+
+// collapseMiddleBlocks pre-computes the head/middle/tail split for long
+// assistant turns so the template can render a collapsed section.
+func collapseMiddleBlocks(turn *renderedTurn) {
+	if turn.Role != "assistant" || len(turn.Blocks) <= collapseThreshold {
+		return
+	}
+
+	// Find first and last text/thinking index.
+	firstTextIdx := -1
+	lastTextIdx := -1
+	for i, b := range turn.Blocks {
+		if b.Type == "text" || b.Type == "thinking" {
+			if firstTextIdx == -1 {
+				firstTextIdx = i
+			}
+			lastTextIdx = i
+		}
+	}
+
+	// If we can't find boundaries, don't collapse.
+	if firstTextIdx == -1 || lastTextIdx == -1 || lastTextIdx <= firstTextIdx+1 {
+		return
+	}
+
+	// Count tool calls in the middle section.
+	middleStart := firstTextIdx + 1
+	middleEnd := lastTextIdx // exclusive
+	toolCount := 0
+	for i := middleStart; i < middleEnd; i++ {
+		if turn.Blocks[i].Type == "tool_use" {
+			toolCount++
+		}
+	}
+
+	if toolCount == 0 {
+		return
+	}
+
+	turn.HeadBlocks = turn.Blocks[:middleStart]
+	turn.MiddleBlocks = turn.Blocks[middleStart:middleEnd]
+	turn.TailBlocks = turn.Blocks[middleEnd:]
+	turn.MiddleToolCount = toolCount
+	turn.Collapsed = true
+}
+
 // shortenPath trims an absolute file path to at most the last n path
 // components. For example, "/a/b/c/d/e.go" with n=3 becomes "c/d/e.go".
 func shortenPath(fp string, n int) string {
@@ -350,29 +403,8 @@ func renderMarkdown(text string) template.HTML {
 	return template.HTML(buf.String())
 }
 
-var messagesTemplate = template.Must(template.New("messages").Funcs(template.FuncMap{
-	"toolInputSummary": toolInputSummary,
-	"markdown":         renderMarkdown,
-	"cleanUser":        cleanUserText,
-	"needsTruncation": func(s string) bool {
-		lines := strings.Split(s, "\n")
-		return len(lines) > 12 || len(s) > 1200
-	},
-}).Parse(`{{if not .}}<div class="messages-empty">No messages yet.</div>
-{{else}}{{range .}}{{if eq .Role "user"}}` +
-	`<div class="user-prompt-container">` +
-	`<div class="message message-user-prompt">` +
-	`<div class="message-content">` +
-	`{{range .Blocks}}{{if eq .Type "text"}}{{$clean := cleanUser .Text}}` +
-	`{{if needsTruncation $clean}}<div class="text-block collapsible-text"><div class="truncated-content">{{$clean}}<div class="fade-overlay"></div></div><button class="show-more-btn" type="button">Show more</button></div>` +
-	`{{else}}<div class="text-block">{{$clean}}</div>{{end}}` +
-	`{{end}}{{end}}` +
-	`</div></div></div>` +
-
-	`{{else}}` +
-
-	`<div class="assistant-turn">` +
-	`{{range .Blocks}}` +
+// assistantBlock is the sub-template for rendering a single assistant content block.
+const assistantBlockTpl = `{{define "block"}}` +
 	`{{if eq .Type "thinking"}}` +
 	`<details class="thinking-block collapsible timeline-item">` +
 	`<summary class="collapsible__summary"><span class="collapsible__icon">&#x25B8;</span> Thinking</summary>` +
@@ -393,6 +425,44 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 	`</div>` +
 	`</div>` +
 	`{{end}}` +
+	`{{end}}`
+
+var messagesTemplate = template.Must(template.New("messages").Funcs(template.FuncMap{
+	"toolInputSummary": toolInputSummary,
+	"markdown":         renderMarkdown,
+	"cleanUser":        cleanUserText,
+	"needsTruncation": func(s string) bool {
+		lines := strings.Split(s, "\n")
+		return len(lines) > 12 || len(s) > 1200
+	},
+	"middleSummary": func(count int) string {
+		return fmt.Sprintf("%d tool calls", count)
+	},
+}).Parse(assistantBlockTpl + `{{if not .}}<div class="messages-empty">No messages yet.</div>
+{{else}}{{range .}}{{if eq .Role "user"}}` +
+	`<div class="user-prompt-container">` +
+	`<div class="message message-user-prompt">` +
+	`<div class="message-content">` +
+	`{{range .Blocks}}{{if eq .Type "text"}}{{$clean := cleanUser .Text}}` +
+	`{{if needsTruncation $clean}}<div class="text-block collapsible-text"><div class="truncated-content">{{$clean}}<div class="fade-overlay"></div></div><button class="show-more-btn" type="button">Show more</button></div>` +
+	`{{else}}<div class="text-block">{{$clean}}</div>{{end}}` +
+	`{{end}}{{end}}` +
+	`</div></div></div>` +
+
+	`{{else}}` +
+
+	`<div class="assistant-turn">` +
+	`{{if .Collapsed}}` +
+	`{{range .HeadBlocks}}{{template "block" .}}{{end}}` +
+	`<div class="collapsed-middle timeline-item">` +
+	`<div class="collapsed-middle-summary">&#x25B8; {{middleSummary .MiddleToolCount}}</div>` +
+	`<div class="collapsed-middle-content" style="display:none;">` +
+	`{{range .MiddleBlocks}}{{template "block" .}}{{end}}` +
+	`</div>` +
+	`</div>` +
+	`{{range .TailBlocks}}{{template "block" .}}{{end}}` +
+	`{{else}}` +
+	`{{range .Blocks}}{{template "block" .}}{{end}}` +
 	`{{end}}` +
 	`</div>` +
 
@@ -400,6 +470,9 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 
 // renderMessagesHTML renders conversation turns as an HTML fragment.
 func renderMessagesHTML(turns []renderedTurn) (string, error) {
+	for i := range turns {
+		collapseMiddleBlocks(&turns[i])
+	}
 	var buf bytes.Buffer
 	if err := messagesTemplate.Execute(&buf, turns); err != nil {
 		return "", err

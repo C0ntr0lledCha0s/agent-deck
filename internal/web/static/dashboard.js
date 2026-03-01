@@ -3044,6 +3044,19 @@
         return
       }
 
+      // Collapsed middle block expand/collapse
+      var collapseSummary = e.target.closest(".collapsed-middle-summary")
+      if (collapseSummary) {
+        var content = collapseSummary.nextElementSibling
+        if (content && content.classList.contains("collapsed-middle-content")) {
+          var isShown = content.style.display !== "none"
+          content.style.display = isShown ? "none" : ""
+          var label = collapseSummary.textContent.slice(2)
+          collapseSummary.textContent = (isShown ? "\u25B8 " : "\u25BE ") + label
+        }
+        return
+      }
+
       // Copy button on code blocks
       var copyBtn = e.target.closest(".copy-btn")
       if (copyBtn) {
