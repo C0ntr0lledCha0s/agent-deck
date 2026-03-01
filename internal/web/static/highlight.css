@@ -1,0 +1,100 @@
+/* Syntax highlighting CSS variables — light theme (default) */
+:root {
+  --hl-bg: #fafafa;
+  --hl-fg: #383a42;
+  --hl-keyword: #a626a4;
+  --hl-string: #50a14f;
+  --hl-number: #986801;
+  --hl-comment: #a0a1a7;
+  --hl-function: #4078f2;
+  --hl-type: #c18401;
+  --hl-operator: #383a42;
+  --hl-punctuation: #383a42;
+  --hl-builtin: #e45649;
+  --hl-variable: #e45649;
+  --hl-added: #50a14f;
+  --hl-deleted: #e45649;
+  --hl-changed: #c18401;
+  --hl-line-highlight: rgba(0, 0, 0, 0.05);
+  --hl-gutter: #9d9d9f;
+}
+
+/* Syntax highlighting CSS variables — dark theme */
+[data-theme="dark"] {
+  --hl-bg: #282c34;
+  --hl-fg: #abb2bf;
+  --hl-keyword: #c678dd;
+  --hl-string: #98c379;
+  --hl-number: #d19a66;
+  --hl-comment: #5c6370;
+  --hl-function: #61afef;
+  --hl-type: #e5c07b;
+  --hl-operator: #abb2bf;
+  --hl-punctuation: #abb2bf;
+  --hl-builtin: #e06c75;
+  --hl-variable: #e06c75;
+  --hl-added: #98c379;
+  --hl-deleted: #e06c75;
+  --hl-changed: #e5c07b;
+  --hl-line-highlight: rgba(255, 255, 255, 0.05);
+  --hl-gutter: #636d83;
+}
+
+/* Map Chroma classes to CSS variables */
+.chroma { background-color: var(--hl-bg); color: var(--hl-fg); }
+.chroma .k,
+.chroma .kc,
+.chroma .kd,
+.chroma .kn,
+.chroma .kp,
+.chroma .kr,
+.chroma .kt { color: var(--hl-keyword); }
+.chroma .s,
+.chroma .sa,
+.chroma .sb,
+.chroma .sc,
+.chroma .dl,
+.chroma .sd,
+.chroma .s2,
+.chroma .se,
+.chroma .sh,
+.chroma .si,
+.chroma .sx,
+.chroma .sr,
+.chroma .s1,
+.chroma .ss { color: var(--hl-string); }
+.chroma .m,
+.chroma .mb,
+.chroma .mf,
+.chroma .mh,
+.chroma .mi,
+.chroma .il,
+.chroma .mo { color: var(--hl-number); }
+.chroma .c,
+.chroma .ch,
+.chroma .cm,
+.chroma .c1,
+.chroma .cs,
+.chroma .cp,
+.chroma .cpf { color: var(--hl-comment); font-style: italic; }
+.chroma .nf,
+.chroma .fm { color: var(--hl-function); }
+.chroma .nc,
+.chroma .no,
+.chroma .nd,
+.chroma .ni,
+.chroma .ne,
+.chroma .nt { color: var(--hl-type); }
+.chroma .o,
+.chroma .ow { color: var(--hl-operator); }
+.chroma .p { color: var(--hl-punctuation); }
+.chroma .nb,
+.chroma .bp { color: var(--hl-builtin); }
+.chroma .nv,
+.chroma .vc,
+.chroma .vg,
+.chroma .vi { color: var(--hl-variable); }
+.chroma .gi { color: var(--hl-added); }
+.chroma .gd { color: var(--hl-deleted); }
+.chroma .hl { background-color: var(--hl-line-highlight); }
+.chroma .ln { color: var(--hl-gutter); }
