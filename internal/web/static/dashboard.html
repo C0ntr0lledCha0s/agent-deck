@@ -97,11 +97,6 @@
               <div class="preview-header" id="preview-header"></div>
               <div class="claude-meta" id="claude-meta"></div>
               <div class="action-bar" id="action-bar"></div>
-              <div id="detail-tabs" class="detail-tabs">
-                <button class="detail-tab detail-tab--active" data-tab="terminal">Terminal</button>
-                <button class="detail-tab" data-tab="messages">Messages</button>
-                <button class="detail-tab" data-tab="analytics">Analytics</button>
-              </div>
               <div class="terminal-toolbar" id="terminal-toolbar" style="display:none">
                 <div class="terminal-toolbar-left">
                   <span class="terminal-toolbar-label" id="terminal-toolbar-dims"></span>
@@ -115,31 +110,30 @@
                   <button class="terminal-toolbar-btn" id="term-fullscreen" title="Toggle fullscreen">&#x26F6; Expand</button>
                 </div>
               </div>
-              <div class="terminal-container" id="terminal-container"></div>
-              <div class="messages-container" id="messages-container" style="display:none"></div>
+              <div class="terminal-container" id="terminal-container" style="display:none"></div>
+              <div class="messages-container" id="messages-container"></div>
               <div class="analytics-container" id="analytics-container" style="display:none"></div>
             </div>
+            <!-- Chat bar (pinned to bottom of right panel) -->
+            <div class="chat-bar" id="chat-bar">
+              <div class="chat-bar-inner" id="chat-bar-inner">
+                <button class="chat-mode-btn" id="chat-mode-btn" type="button" title="Change chat mode" aria-label="Chat mode">
+                  <span class="chat-mode-icon" id="chat-mode-icon">+</span>
+                  <span class="chat-mode-label" id="chat-mode-label">auto-route</span>
+                  <span class="chat-mode-caret">&#x25BE;</span>
+                </button>
+                <input
+                  type="text"
+                  class="chat-input"
+                  id="chat-input"
+                  placeholder="Describe a new task..."
+                  aria-label="Chat input"
+                />
+                <button class="chat-send-btn" id="chat-send-btn" type="button" aria-label="Send">Send</button>
+              </div>
+              <div class="chat-bar-hint" id="chat-bar-hint">via tmux send-keys &rarr; new session</div>
+            </div>
           </div>
-        </div>
-
-        <!-- Chat bar (pinned to bottom) -->
-        <div class="chat-bar" id="chat-bar">
-          <div class="chat-bar-inner" id="chat-bar-inner">
-            <button class="chat-mode-btn" id="chat-mode-btn" type="button" title="Change chat mode" aria-label="Chat mode">
-              <span class="chat-mode-icon" id="chat-mode-icon">+</span>
-              <span class="chat-mode-label" id="chat-mode-label">auto-route</span>
-              <span class="chat-mode-caret">&#x25BE;</span>
-            </button>
-            <input
-              type="text"
-              class="chat-input"
-              id="chat-input"
-              placeholder="Describe a new task..."
-              aria-label="Chat input"
-            />
-            <button class="chat-send-btn" id="chat-send-btn" type="button" aria-label="Send">Send</button>
-          </div>
-          <div class="chat-bar-hint" id="chat-bar-hint">via tmux send-keys &rarr; new session</div>
         </div>
       </div>
 
@@ -337,9 +331,9 @@
           </dl>
           <h3>Detail View</h3>
           <dl class="help-list">
-            <dt>Terminal</dt><dd>Live session output with font size controls</dd>
-            <dt>Messages</dt><dd>Conversation history</dd>
-            <dt>Analytics</dt><dd>Token usage, cost, tool breakdown</dd>
+            <dt>Messages</dt><dd>Conversation history (shown by default)</dd>
+            <dt>Terminal</dt><dd>Click >_ icon in header to open fullscreen terminal overlay</dd>
+            <dt>Analytics</dt><dd>Click &equiv; icon in header to toggle token usage and cost breakdown</dd>
           </dl>
         </div>
       </div>

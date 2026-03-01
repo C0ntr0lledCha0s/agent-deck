@@ -117,6 +117,13 @@ make build
 # Full API + dashboard, works inside agent-deck sessions
 ```
 
+**Testing without conflicting with a running instance:**
+```bash
+./build/agent-deck web --headless --listen 127.0.0.1:9000
+# Open: http://127.0.0.1:9000
+# Uses a different port so it won't conflict with any existing agent-deck on 8420
+```
+
 **Fallback (static files only — no APIs):**
 ```bash
 cd internal/web && python3 -m http.server 8422 --bind 127.0.0.1

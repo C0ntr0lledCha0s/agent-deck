@@ -975,28 +975,6 @@
   color: var(--red);
 }
 
-.claude-meta-session-id {
-  color: var(--text-mid);
-}
-
-.claude-meta-mcps {
-  margin-top: 2px;
-}
-
-.claude-meta-mcp-name {
-  color: var(--text-mid);
-  margin-right: 6px;
-}
-
-.claude-meta-hints {
-  margin-top: 2px;
-  color: var(--text-dim);
-}
-
-.claude-meta-hint-key {
-  color: var(--text-mid);
-}
-
 /* ── Conductor view ───────────────────────────────────────────── */
 
 .conductor-view {
@@ -1734,36 +1712,27 @@
   font-family: var(--font-mono);
 }
 
-/* ── Detail tabs ──────────────────────────────────────────────── */
+/* ── Detail action icons (terminal/analytics buttons in header) ── */
 
-.detail-tabs {
-  flex-shrink: 0;
-  display: flex;
-  gap: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-}
-
-.detail-tab {
-  padding: 8px 16px;
-  border: none;
-  border-bottom: 2px solid transparent;
+.detail-action-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
   background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.82rem;
-  font-weight: 500;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
   cursor: pointer;
   transition: color 120ms, border-color 120ms;
 }
 
-.detail-tab:hover {
-  color: var(--text);
-}
-
-.detail-tab--active {
+.detail-action-icon:hover {
   color: var(--accent);
-  border-bottom-color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* ── Collapsible form sections ────────────────────────────────── */
@@ -2467,7 +2436,7 @@ details[open] > .collapsible__summary .collapsible__icon {
   gap: 6px;
   align-items: center;
   background: var(--bg-card);
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border-light);
   padding: 4px;
 }

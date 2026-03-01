@@ -374,6 +374,14 @@ Change the listen address (default: `127.0.0.1:8420`):
 agent-deck web --listen 127.0.0.1:9000
 ```
 
+Headless mode (no TUI, works inside agent-deck sessions):
+
+```bash
+agent-deck web --headless
+# Use a different port to avoid conflicting with a running instance:
+agent-deck web --headless --listen 127.0.0.1:9000
+```
+
 Protect API + WebSocket access with a bearer token:
 
 ```bash

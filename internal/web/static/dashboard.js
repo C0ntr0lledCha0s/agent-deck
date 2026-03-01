@@ -631,7 +631,6 @@
     var conductorEl = document.getElementById("conductor-view")
     var kanbanEl = document.getElementById("kanban-view")
     var workspacesEl = document.getElementById("workspaces-view")
-    var chatBar = document.getElementById("chat-bar")
 
     // Hide all non-active views
     var hideAll = function () {
@@ -673,9 +672,7 @@
       placeholder = el("div", "view-placeholder")
       placeholder.id = "view-placeholder"
       var parent = panels ? panels.parentNode : document.querySelector(".main-content")
-      if (parent && chatBar) {
-        parent.insertBefore(placeholder, chatBar)
-      } else if (parent) {
+      if (parent) {
         parent.appendChild(placeholder)
       }
     }
@@ -691,16 +688,13 @@
 
   // ── Conductor view ───────────────────────────────────────────────
   function renderConductorView() {
-    var chatBar = document.getElementById("chat-bar")
     var conductorEl = document.getElementById("conductor-view")
 
     if (!conductorEl) {
       conductorEl = el("div", "conductor-view")
       conductorEl.id = "conductor-view"
       var parent = document.querySelector(".main-content")
-      if (parent && chatBar) {
-        parent.insertBefore(conductorEl, chatBar)
-      } else if (parent) {
+      if (parent) {
         parent.appendChild(conductorEl)
       }
     }
@@ -838,16 +832,13 @@
   var kanbanGroupByProject = true
 
   function renderKanbanView() {
-    var chatBar = document.getElementById("chat-bar")
     var kanbanEl = document.getElementById("kanban-view")
 
     if (!kanbanEl) {
       kanbanEl = el("div", "kanban-view")
       kanbanEl.id = "kanban-view"
       var parent = document.querySelector(".main-content")
-      if (parent && chatBar) {
-        parent.insertBefore(kanbanEl, chatBar)
-      } else if (parent) {
+      if (parent) {
         parent.appendChild(kanbanEl)
       }
     }
@@ -1023,16 +1014,13 @@
   var workspacePollInterval = null
 
   function renderWorkspacesView() {
-    var chatBar = document.getElementById("chat-bar")
     var wsEl = document.getElementById("workspaces-view")
 
     if (!wsEl) {
       wsEl = el("div", "workspaces-view")
       wsEl.id = "workspaces-view"
       var parent = document.querySelector(".main-content")
-      if (parent && chatBar) {
-        parent.insertBefore(wsEl, chatBar)
-      } else if (parent) {
+      if (parent) {
         parent.appendChild(wsEl)
       }
     }
@@ -2146,22 +2134,19 @@
     renderClaudeMeta(task)
     renderActionBar(task)
 
-    // If the Messages tab is currently active, reload messages for the new task.
-    var activeTab = document.querySelector(".detail-tab--active")
-    if (activeTab && activeTab.dataset.tab === "messages") {
-      var msgSessionId = getSessionIdForMessages(task)
-      if (msgSessionId) {
-        if (msgSessionId !== state.lastLoadedMessagesSession) {
-          loadSessionMessages(msgSessionId)
-        }
-      } else {
-        // New task has no session — clear stale messages from previous task.
-        state.lastLoadedMessagesSession = null
-        var mc = document.getElementById("messages-container")
-        if (mc) {
-          clearChildren(mc)
-          mc.appendChild(el("div", "terminal-placeholder", "No conversation data available."))
-        }
+    // Always load messages for the selected task (messages is the default view).
+    var msgSessionId = getSessionIdForMessages(task)
+    if (msgSessionId) {
+      if (msgSessionId !== state.lastLoadedMessagesSession) {
+        loadSessionMessages(msgSessionId)
+      }
+    } else {
+      // New task has no session — clear stale messages from previous task.
+      state.lastLoadedMessagesSession = null
+      var mc = document.getElementById("messages-container")
+      if (mc) {
+        clearChildren(mc)
+        mc.appendChild(el("div", "terminal-placeholder", "No conversation data available."))
       }
     }
   }
@@ -2184,6 +2169,26 @@
 
     var actions = el("div", "detail-actions")
     actions.appendChild(createAgentStatusBadge(effectiveAgentStatus(task)))
+
+    // Terminal icon button
+    var termBtn = el("button", "detail-action-icon", ">_")
+    termBtn.title = "Open terminal"
+    termBtn.addEventListener("click", openTerminalOverlay)
+    actions.appendChild(termBtn)
+
+    // Analytics icon button
+    var analyticsBtn = el("button", "detail-action-icon", "\u2261")
+    analyticsBtn.title = "Analytics"
+    analyticsBtn.addEventListener("click", function () {
+      var ac = document.getElementById("analytics-container")
+      if (ac) {
+        var isVisible = ac.style.display !== "none"
+        ac.style.display = isVisible ? "none" : ""
+        if (!isVisible && state.selectedTaskId) loadAnalytics(state.selectedTaskId)
+      }
+    })
+    actions.appendChild(analyticsBtn)
+
     top.appendChild(actions)
 
     header.appendChild(top)
@@ -2374,11 +2379,10 @@
 
     clearChildren(container)
 
-    // Row 1: connection status + session ID
+    // Connection status only (compact single line)
     var row1 = el("div", "claude-meta-row")
 
     var statusLabel = el("span", null)
-    statusLabel.appendChild(document.createTextNode("Status: "))
     var liveSession = getActiveSessionForTask(task)
     if (liveSession && liveSession.status !== "error") {
       var connSpan = el("span", "claude-meta-connected", "\u25CF Connected")
@@ -2394,42 +2398,7 @@
       statusLabel.appendChild(discSpan)
     }
     row1.appendChild(statusLabel)
-
-    // Session ID (from active session in chain)
-    var activeSession = null
-    if (task.sessions) {
-      for (var i = 0; i < task.sessions.length; i++) {
-        if (task.sessions[i].status === "active") {
-          activeSession = task.sessions[i]
-          break
-        }
-      }
-    }
-    if (activeSession && activeSession.claudeSessionId) {
-      var sidLabel = el("span", null)
-      sidLabel.appendChild(document.createTextNode("Session: "))
-      sidLabel.appendChild(el("span", "claude-meta-session-id", activeSession.claudeSessionId))
-      row1.appendChild(sidLabel)
-    }
     container.appendChild(row1)
-
-    // MCPs
-    var mcps = task.mcps || []
-    if (mcps.length > 0) {
-      var mcpRow = el("div", "claude-meta-mcps")
-      mcpRow.appendChild(document.createTextNode("MCPs: "))
-      for (var m = 0; m < mcps.length; m++) {
-        mcpRow.appendChild(el("span", "claude-meta-mcp-name", mcps[m] + " \u00D7"))
-      }
-      container.appendChild(mcpRow)
-    }
-
-    // Fork hints
-    var hints = el("div", "claude-meta-hints")
-    hints.appendChild(document.createTextNode("Fork: "))
-    var keyHint = el("span", "claude-meta-hint-key", "f quick fork, F fork with options")
-    hints.appendChild(keyHint)
-    container.appendChild(hints)
   }
 
   // ── OutputBuffer (throttles writes to xterm.js) ──────────────────
@@ -2699,6 +2668,14 @@
     updateTerminalToolbar()
   }
 
+  function openTerminalOverlay() {
+    var terminalContainer = document.getElementById("terminal-container")
+    var toolbar = document.getElementById("terminal-toolbar")
+    if (terminalContainer) terminalContainer.style.display = ""
+    if (toolbar && state.terminal) toolbar.style.display = ""
+    if (!state.terminalFullscreen) toggleTerminalFullscreen()
+  }
+
   function toggleTerminalFullscreen() {
     var detailView = document.getElementById("detail-view")
     var btn = document.getElementById("term-fullscreen")
@@ -2710,6 +2687,11 @@
     } else {
       detailView.classList.remove("terminal-fullscreen")
       if (btn) btn.textContent = "\u26F6 Expand"
+      // Terminal is now an overlay — hide container and toolbar when closing
+      var terminalContainer = document.getElementById("terminal-container")
+      var toolbar = document.getElementById("terminal-toolbar")
+      if (terminalContainer) terminalContainer.style.display = "none"
+      if (toolbar) toolbar.style.display = "none"
     }
     if (state.fitAddon) {
       setTimeout(function () {
@@ -3594,8 +3576,8 @@
 
     fetchAnalyticsOnce(taskId)
     analyticsTimer = setInterval(function () {
-      var activeTab = document.querySelector(".detail-tab--active")
-      if (activeTab && activeTab.dataset.tab === "analytics") {
+      var ac = document.getElementById("analytics-container")
+      if (ac && ac.style.display !== "none") {
         fetchAnalyticsOnce(taskId)
       } else {
         clearInterval(analyticsTimer)
@@ -3693,56 +3675,6 @@
     if (m < 60) return m + "m " + (s % 60) + "s"
     var h = Math.floor(m / 60)
     return h + "h " + (m % 60) + "m"
-  }
-
-  function switchDetailTab(tabName) {
-    var terminalContainer = document.getElementById("terminal-container")
-    var messagesContainer = document.getElementById("messages-container")
-    var analyticsContainer = document.getElementById("analytics-container")
-    var tabs = document.querySelectorAll(".detail-tab")
-
-    for (var i = 0; i < tabs.length; i++) {
-      if (tabs[i].dataset.tab === tabName) {
-        tabs[i].classList.add("detail-tab--active")
-      } else {
-        tabs[i].classList.remove("detail-tab--active")
-      }
-    }
-
-    var toolbar = document.getElementById("terminal-toolbar")
-
-    if (tabName === "terminal") {
-      if (terminalContainer) terminalContainer.style.display = ""
-      if (messagesContainer) messagesContainer.style.display = "none"
-      if (analyticsContainer) analyticsContainer.style.display = "none"
-      if (toolbar && state.terminal) toolbar.style.display = ""
-      if (state.fitAddon) {
-        setTimeout(function () {
-          state.fitAddon.fit()
-          sendTerminalResize()
-          updateTerminalToolbar()
-        }, 50)
-      }
-    } else if (tabName === "messages") {
-      if (terminalContainer) terminalContainer.style.display = "none"
-      if (messagesContainer) messagesContainer.style.display = ""
-      if (analyticsContainer) analyticsContainer.style.display = "none"
-      if (toolbar) toolbar.style.display = "none"
-
-      if (state.selectedTaskId) {
-        var task = findTask(state.selectedTaskId)
-        var msgSessionId = getSessionIdForMessages(task)
-        if (msgSessionId && msgSessionId !== state.lastLoadedMessagesSession) {
-          loadSessionMessages(msgSessionId)
-        }
-      }
-    } else if (tabName === "analytics") {
-      if (terminalContainer) terminalContainer.style.display = "none"
-      if (messagesContainer) messagesContainer.style.display = "none"
-      if (analyticsContainer) analyticsContainer.style.display = ""
-      if (toolbar) toolbar.style.display = "none"
-      if (state.selectedTaskId) loadAnalytics(state.selectedTaskId)
-    }
   }
 
   // ── Add Project modal ────────────────────────────────────────────
@@ -4123,15 +4055,6 @@
       }
     }
   })
-
-  // Detail tabs (Terminal / Messages)
-  var detailTabs = document.querySelectorAll(".detail-tab")
-  for (var dt = 0; dt < detailTabs.length; dt++) {
-    detailTabs[dt].addEventListener("click", function (e) {
-      var tabName = e.currentTarget.dataset.tab
-      if (tabName) switchDetailTab(tabName)
-    })
-  }
 
   // ── Search bar ──────────────────────────────────────────────────
   var searchInput = document.getElementById("search-input")
