@@ -3245,7 +3245,25 @@
             setTimeout(function () { loadSessionMessages(msgSessionId) }, 5000)
           }
         } else if (data && data.status === "queued") {
-          showToast("No active session \u2014 try restarting first", "error")
+          showToast("Session disconnected — restarting\u2026", "info")
+          fetch(apiPathWithToken("/api/tasks/" + taskId + "/restart"), {
+            method: "POST",
+            headers: authHeaders(),
+          })
+            .then(function (r) { return r.json() })
+            .then(function (rd) {
+              if (rd.status === "restarted") {
+                showToast("Session restarted — sending message\u2026", "success")
+                fetchTasks()
+                // Resend after session initializes
+                setTimeout(function () { sendTaskInput(taskId, text) }, 3000)
+              } else {
+                showToast("Restart failed: " + (rd.message || "unknown error"), "error")
+              }
+            })
+            .catch(function (restartErr) {
+              showToast("Restart failed: " + restartErr.message, "error")
+            })
         }
       })
       .catch(function (err) {
