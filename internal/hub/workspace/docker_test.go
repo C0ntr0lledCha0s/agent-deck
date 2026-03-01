@@ -36,6 +36,19 @@ func TestDockerRuntimeImplementsInterface(t *testing.T) {
 	var _ ContainerRuntime = (*DockerRuntime)(nil)
 }
 
+func TestSelfNetworks(t *testing.T) {
+	rt := skipIfNoDockerRuntime(t)
+	ctx := context.Background()
+
+	// When not running inside a container, SelfNetworks should return nil/empty
+	// (hostname won't match any container).
+	networks, err := rt.SelfNetworks(ctx)
+	require.NoError(t, err)
+	// Outside a container, expect empty result (not an error).
+	t.Logf("SelfNetworks() returned %d networks: %v", len(networks), networks)
+	_ = networks // No assertion on count — depends on environment.
+}
+
 func TestCreateAppliesSecurityOpts(t *testing.T) {
 	rt := skipIfNoDockerRuntime(t)
 	ctx := context.Background()
