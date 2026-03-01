@@ -151,6 +151,24 @@ func TestContainerRuntimeErrors(t *testing.T) {
 	assert.ErrorIs(t, err, errFail)
 }
 
+func TestCreateOptsSecurityFields(t *testing.T) {
+	opts := CreateOpts{
+		Name:  "sandbox-test",
+		Image: "ubuntu:24.04",
+		SecurityOpts: []string{"no-new-privileges"},
+		CapAdd:       []string{"NET_ADMIN", "NET_RAW"},
+		CapDrop:      []string{"ALL"},
+		NetworkMode:  "none",
+		AutoRemove:   true,
+	}
+
+	assert.Equal(t, []string{"no-new-privileges"}, opts.SecurityOpts)
+	assert.Equal(t, []string{"NET_ADMIN", "NET_RAW"}, opts.CapAdd)
+	assert.Equal(t, []string{"ALL"}, opts.CapDrop)
+	assert.Equal(t, "none", opts.NetworkMode)
+	assert.True(t, opts.AutoRemove)
+}
+
 func TestContainerNameForProject(t *testing.T) {
 	tests := []struct {
 		project  string

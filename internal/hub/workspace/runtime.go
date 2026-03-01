@@ -49,6 +49,13 @@ type CreateOpts struct {
 	Mounts   []Mount           // Bind mounts from host to container.
 	NanoCPUs int64             // CPU quota in billionths of a CPU (1e9 = 1 core).
 	Memory   int64             // Memory limit in bytes.
+
+	// Security and isolation options (used for sandbox containers).
+	SecurityOpts []string // e.g. ["no-new-privileges"].
+	CapAdd       []string // Linux capabilities to add (e.g. "NET_ADMIN").
+	CapDrop      []string // Linux capabilities to drop (e.g. "ALL").
+	NetworkMode  string   // Docker network mode (e.g. "none", "bridge", custom network name).
+	AutoRemove   bool     // Remove container automatically when it stops.
 }
 
 // Mount describes a bind mount from the host filesystem into the container.
