@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 )
@@ -209,6 +210,39 @@ func ParseSessionJSONL(path string) (*SessionAnalytics, error) {
 	}
 
 	return analytics, scanner.Err()
+}
+
+// ParseSessionJSONLByID locates and parses a Claude session JSONL file by session UUID.
+// It searches under baseDir (typically ~/.claude/projects) for a matching JSONL file.
+// If baseDir is empty, it defaults to ~/.claude/projects.
+func ParseSessionJSONLByID(baseDir string, sessionID string) (*SessionAnalytics, error) {
+	if baseDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		baseDir = filepath.Join(home, ".claude", "projects")
+	}
+
+	// Claude stores JSONL files as <baseDir>/**/<sessionID>.jsonl
+	var found string
+	_ = filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		base := filepath.Base(path)
+		if base == sessionID+".jsonl" {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+
+	if found == "" {
+		return nil, os.ErrNotExist
+	}
+
+	return ParseSessionJSONL(found)
 }
 
 // CalculateBillingBlocks groups timestamps into billing windows.

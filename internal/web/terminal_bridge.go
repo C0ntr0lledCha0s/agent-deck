@@ -128,6 +128,25 @@ func (b *tmuxPTYBridge) WriteInput(data string) error {
 	return err
 }
 
+// ExitCopyMode sends 'q' to the PTY only if the tmux pane is currently in
+// copy-mode. This prevents stray keystrokes from reaching the application
+// when the user clicks "Bottom" while not scrolled.
+func (b *tmuxPTYBridge) ExitCopyMode() error {
+	if b == nil || b.ptmx == nil {
+		return fmt.Errorf("bridge not initialized")
+	}
+	cmd := tmuxCommand("display-message", "-t", b.tmuxSession, "-p", "#{pane_in_mode}")
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("check pane mode: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "1" {
+		_, err = b.ptmx.Write([]byte("q"))
+		return err
+	}
+	return nil
+}
+
 func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 	if b == nil || b.ptmx == nil {
 		return fmt.Errorf("bridge not initialized")
@@ -144,8 +163,13 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 		return err
 	}
 
-	// Do not call `tmux resize-window` here: that changes shared tmux window
-	// dimensions and causes web resizing to leak into other attached clients.
+	// Also resize the tmux window so content is rendered at the web client's
+	// width. Without this, tmux renders at its own window size (set by
+	// other clients like the TUI), causing horizontal overflow when
+	// scrolling through the terminal in the browser.
+	cmd := tmuxCommand("resize-window", "-t", b.tmuxSession, "-x", fmt.Sprintf("%d", cols), "-y", fmt.Sprintf("%d", rows))
+	_ = cmd.Run()
+
 	return nil
 }
 

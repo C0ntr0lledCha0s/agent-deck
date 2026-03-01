@@ -71,11 +71,48 @@ func BuildMenuSnapshot(profile string, instances []*session.Instance, groupsData
 		}
 	}
 
+	assignSessionTiers(items, generatedAt)
+
 	return &MenuSnapshot{
 		Profile:       profile,
 		GeneratedAt:   generatedAt.UTC(),
 		TotalGroups:   totalGroups,
 		TotalSessions: totalSessions,
 		Items:         items,
+	}
+}
+
+const recentThreshold = 30 * time.Minute
+
+// assignSessionTiers classifies each session MenuItem into a tier based on its
+// status and recency. The four tiers are:
+//   - needsAttention: status is waiting or error (requires user action)
+//   - active: status is running or starting
+//   - recent: idle but accessed within the last 30 minutes
+//   - idle: everything else
+func assignSessionTiers(items []MenuItem, now time.Time) {
+	for i := range items {
+		if items[i].Type != MenuItemTypeSession || items[i].Session == nil {
+			continue
+		}
+		s := items[i].Session
+		switch s.Status {
+		case session.StatusWaiting:
+			s.Tier = "needsAttention"
+			s.TierBadge = "approval"
+		case session.StatusError:
+			s.Tier = "needsAttention"
+			s.TierBadge = "error"
+		case session.StatusRunning, session.StatusStarting:
+			s.Tier = "active"
+		case session.StatusIdle:
+			if !s.LastAccessedAt.IsZero() && now.Sub(s.LastAccessedAt) < recentThreshold {
+				s.Tier = "recent"
+			} else {
+				s.Tier = "idle"
+			}
+		default:
+			s.Tier = "idle"
+		}
 	}
 }

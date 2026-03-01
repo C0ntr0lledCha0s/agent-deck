@@ -14,6 +14,8 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
 	"github.com/asheshgoplani/agent-deck/internal/hub/workspace"
+	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // handleTasks dispatches GET /api/tasks and POST /api/tasks.
@@ -246,6 +248,18 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleTaskTransition(w, r, taskID)
+	case "analytics":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		s.handleTaskAnalytics(w, r, taskID)
+	case "restart":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		s.handleTaskRestart(w, r, taskID)
 	default:
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
 	}
@@ -907,13 +921,9 @@ func (s *Server) handleProjectDelete(w http.ResponseWriter, r *http.Request, nam
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Response types for hub API endpoints and SSE events.
+// Response types for hub API endpoints.
 
 type tasksListResponse struct {
-	Tasks []*hub.Task `json:"tasks"`
-}
-
-type tasksSSEPayload struct {
 	Tasks []*hub.Task `json:"tasks"`
 }
 
@@ -977,6 +987,29 @@ type updateTaskRequest struct {
 	AskQuestion *string `json:"askQuestion,omitempty"`
 }
 
+type analyticsResponse struct {
+	Analytics *taskAnalyticsData `json:"analytics"`
+}
+
+type taskAnalyticsData struct {
+	InputTokens          int            `json:"inputTokens"`
+	OutputTokens         int            `json:"outputTokens"`
+	CacheReadTokens      int            `json:"cacheReadTokens"`
+	CacheWriteTokens     int            `json:"cacheWriteTokens"`
+	CurrentContextTokens int            `json:"currentContextTokens"`
+	ContextPercent       float64        `json:"contextPercent"`
+	TotalTurns           int            `json:"totalTurns"`
+	DurationSeconds      float64        `json:"durationSeconds"`
+	EstimatedCost        float64        `json:"estimatedCost"`
+	ToolCalls            []toolCallData `json:"toolCalls"`
+	Model                string         `json:"model,omitempty"`
+}
+
+type toolCallData struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
 type taskInputRequest struct {
 	Input string `json:"input"`
 }
@@ -1010,6 +1043,99 @@ func isValidAgentStatus(s string) bool {
 		return true
 	}
 	return false
+}
+
+// handleTaskAnalytics serves GET /api/tasks/{id}/analytics.
+func (s *Server) handleTaskAnalytics(w http.ResponseWriter, _ *http.Request, taskID string) {
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	data := &taskAnalyticsData{}
+	sessionID := getActiveClaudeSessionID(task)
+	if sessionID != "" {
+		analytics, parseErr := session.ParseSessionJSONLByID(s.claudeProjectsDir, sessionID)
+		if parseErr == nil && analytics != nil {
+			data.InputTokens = analytics.InputTokens
+			data.OutputTokens = analytics.OutputTokens
+			data.CacheReadTokens = analytics.CacheReadTokens
+			data.CacheWriteTokens = analytics.CacheWriteTokens
+			data.CurrentContextTokens = analytics.CurrentContextTokens
+			data.ContextPercent = analytics.ContextPercent(200000)
+			data.TotalTurns = analytics.TotalTurns
+			data.DurationSeconds = analytics.Duration.Seconds()
+			data.EstimatedCost = analytics.EstimatedCost
+			for _, tc := range analytics.ToolCalls {
+				data.ToolCalls = append(data.ToolCalls, toolCallData{Name: tc.Name, Count: tc.Count})
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, analyticsResponse{Analytics: data})
+}
+
+type taskRestartResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// handleTaskRestart serves POST /api/tasks/{id}/restart.
+func (s *Server) handleTaskRestart(w http.ResponseWriter, _ *http.Request, taskID string) {
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	// Try to restart via the hub bridge
+	if s.hubBridge != nil {
+		restartErr := s.hubBridge.RestartTask(task)
+		if restartErr == nil {
+			s.notifyTaskChanged()
+			writeJSON(w, http.StatusOK, taskRestartResponse{
+				Status:  "restarted",
+				Message: "session restarted",
+			})
+			return
+		}
+		logging.ForComponent(logging.CompWeb).Warn("restart_failed",
+			slog.String("task", taskID),
+			slog.String("error", restartErr.Error()),
+		)
+		writeJSON(w, http.StatusConflict, taskRestartResponse{
+			Status:  "error",
+			Message: restartErr.Error(),
+		})
+		return
+	}
+
+	// No hub bridge configured
+	writeJSON(w, http.StatusConflict, taskRestartResponse{
+		Status:  "no_session",
+		Message: "no active session to restart",
+	})
+}
+
+// getActiveClaudeSessionID returns the most recent ClaudeSessionID from a task's sessions.
+func getActiveClaudeSessionID(task *hub.Task) string {
+	for i := len(task.Sessions) - 1; i >= 0; i-- {
+		if task.Sessions[i].ClaudeSessionID != "" {
+			return task.Sessions[i].ClaudeSessionID
+		}
+	}
+	return ""
 }
 
 // --- Hub-Session Bridge handlers ---
