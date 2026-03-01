@@ -295,7 +295,7 @@ func cleanUserText(s string) string {
 
 // mdRenderer is a goldmark instance configured for safe markdown rendering.
 var mdRenderer = goldmark.New(
-	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithExtensions(extension.GFM, &chromaHighlighter{}),
 	goldmark.WithRendererOptions(html.WithUnsafe()),
 )
 
