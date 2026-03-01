@@ -1,4 +1,4 @@
-.PHONY: build run install clean dev release-local test fmt lint ci
+.PHONY: build run install clean dev release-local test fmt lint ci docker-build docker-run docker-up docker-down
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -87,3 +87,18 @@ release-local:
 	goreleaser release --clean
 	@echo "=== Release complete ==="
 	@echo "Verify: gh release view $$(git describe --tags --exact-match) --repo asheshgoplani/agent-deck"
+
+# Docker targets
+docker-build:
+	docker build -t agent-deck:latest --build-arg VERSION=$(VERSION) .
+
+docker-run: docker-build
+	docker run --rm -p 8420:8420 \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		agent-deck:latest
+
+docker-up:
+	docker compose up -d --build
+
+docker-down:
+	docker compose down
