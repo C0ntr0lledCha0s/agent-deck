@@ -1954,13 +1954,11 @@
 }
 
 /* User messages: pill/bubble style */
+/* User messages: subtle accent background */
 .message-block--user {
-  display: inline-block;
-  max-width: 85%;
-  background: rgba(96, 165, 250, 0.08);
-  border: 1px solid rgba(96, 165, 250, 0.15);
-  border-radius: 16px;
-  padding: 8px 16px;
+  background: rgba(96, 165, 250, 0.06);
+  border-left: 2px solid rgba(96, 165, 250, 0.3);
+  padding: 8px 12px 8px 14px;
   margin-bottom: 8px;
 }
 
@@ -2088,9 +2086,75 @@
   margin: 0.8em 0;
 }
 
-/* User messages keep pre-wrap for plain text */
+/* User messages: markdown rendering, collapsible when long */
 .message-block--user .message-content {
-  white-space: pre-wrap;
+  white-space: normal;
+}
+
+/* Collapsed user message: max-height with fade */
+.message-content--collapsed {
+  max-height: 120px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+}
+
+/* Show more / Show less toggle */
+.message-toggle {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 0.75rem;
+  color: var(--blue);
+  cursor: pointer;
+  opacity: 0.8;
+}
+.message-toggle:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+/* ── Collapsed steps (bookend grouping) ──────────────────────── */
+
+.collapsed-steps {
+  margin: 4px 0;
+}
+
+.collapsed-steps-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  border-left: 2px dashed var(--border);
+  margin-left: 12px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 120ms;
+}
+.collapsed-steps-toggle:hover {
+  color: var(--text-mid);
+}
+
+.collapsed-steps-icon {
+  font-size: 0.6rem;
+  opacity: 0.6;
+}
+
+.collapsed-steps--hidden {
+  display: none;
+}
+
+.collapsed-steps-content {
+  border-left: 2px dashed var(--border);
+  margin-left: 12px;
+  padding-left: 4px;
+  opacity: 0.85;
 }
 
 /* ── Tool items (nested inside assistant messages) ───────────── */
@@ -2350,6 +2414,7 @@
   line-height: 1.45;
   overflow-x: auto;
   margin: 0;
+  background: transparent;
 }
 
 .chroma .line {

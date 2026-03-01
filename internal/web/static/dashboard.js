@@ -4071,6 +4071,98 @@
     }
   }
 
+  // renderMessageBlock creates a DOM element for a single message.
+  function renderMessageBlock(msg) {
+    var role = msg.role || msg.type || "unknown"
+    var variant = role === "user" ? "--user" : "--assistant"
+    var msgBlock = el("div", "message-block message-block" + variant)
+
+    // Role label (only for user messages — assistant is the default)
+    if (role === "user") {
+      var roleLabel = el("div", "message-role")
+      roleLabel.textContent = "You"
+      msgBlock.appendChild(roleLabel)
+    }
+
+    // Message content text
+    if (msg.content) {
+      var contentDiv = el("div", "message-content")
+      // Render markdown for all messages.
+      // Safe: renderMarkdown() escapes all HTML entities in the input
+      // before applying markdown formatting, preventing XSS.
+      contentDiv.innerHTML = renderMarkdown(msg.content) // eslint-disable-line no-unsanitized/property
+      msgBlock.appendChild(contentDiv)
+
+      // Collapse long user messages
+      if (role === "user" && msg.content.length > 400) {
+        contentDiv.classList.add("message-content--collapsed")
+        var toggle = document.createElement("button")
+        toggle.className = "message-toggle"
+        toggle.textContent = "Show more"
+        toggle.setAttribute("type", "button")
+        toggle.addEventListener("click", function (cd, btn) {
+          return function () {
+            var collapsed = cd.classList.toggle("message-content--collapsed")
+            btn.textContent = collapsed ? "Show more" : "Show less"
+          }
+        }(contentDiv, toggle))
+        msgBlock.appendChild(toggle)
+      }
+    }
+
+    // Tool call rendering
+    if (msg.tools && msg.tools.length > 0) {
+      var toolsContainer = el("div", "tool-items")
+      for (var j = 0; j < msg.tools.length; j++) {
+        try {
+          var toolItem = ToolRenderers.renderTool(msg.tools[j])
+          toolsContainer.appendChild(toolItem)
+        } catch (err) {
+          console.error("ToolRenderers.renderTool failed for", msg.tools[j].name, err)
+          toolsContainer.appendChild(el("div", "tool-item tool-item--error", "[tool: " + msg.tools[j].name + "]"))
+        }
+      }
+      msgBlock.appendChild(toolsContainer)
+    }
+
+    // Legacy single-tool rendering (backward compat)
+    if (!msg.tools && msg.toolName) {
+      try {
+        var toolEl = ToolRenderers.render(
+          msg.toolName,
+          msg.toolInput || null,
+          msg.toolResult || null,
+          msg.augment || null
+        )
+        var legacyItem = el("div", "tool-items")
+        var legacyWrap = el("div", "tool-item tool-item--success")
+        legacyWrap.appendChild(toolEl)
+        legacyItem.appendChild(legacyWrap)
+        msgBlock.appendChild(legacyItem)
+      } catch (err) {
+        console.error("ToolRenderers.render failed for", msg.toolName, err)
+      }
+    }
+
+    return msgBlock
+  }
+
+  // countToolCalls returns total tool invocations in a group of messages.
+  function countToolCalls(msgs) {
+    var count = 0
+    for (var i = 0; i < msgs.length; i++) {
+      if (msgs[i].tools) count += msgs[i].tools.length
+      if (msgs[i].toolName) count++
+    }
+    return count
+  }
+
+  // isAssistantMsg returns true for assistant-role messages.
+  function isAssistantMsg(msg) {
+    var role = msg.role || msg.type || "unknown"
+    return role !== "user"
+  }
+
   function renderMessages(messages) {
     var container = document.getElementById("messages-container")
     if (!container) return
@@ -4082,68 +4174,74 @@
       return
     }
 
-    for (var i = 0; i < messages.length; i++) {
+    // Group consecutive assistant messages between user messages.
+    // For each group of 3+ assistant messages, show first + last (bookends)
+    // and collapse the middle behind an expander.
+    var i = 0
+    while (i < messages.length) {
       var msg = messages[i]
-      var role = msg.role || msg.type || "unknown"
-      var variant = role === "user" ? "--user" : "--assistant"
-      var msgBlock = el("div", "message-block message-block" + variant)
 
-      // Role label (only for user messages — assistant is the default)
-      if (role === "user") {
-        var roleLabel = el("div", "message-role")
-        roleLabel.textContent = "You"
-        msgBlock.appendChild(roleLabel)
+      // User messages: render directly
+      if (!isAssistantMsg(msg)) {
+        container.appendChild(renderMessageBlock(msg))
+        i++
+        continue
       }
 
-      // Message content text
-      if (msg.content) {
-        var contentDiv = el("div", "message-content")
-        if (role === "assistant") {
-          // Render markdown for assistant messages.
-          // Safe: renderMarkdown() escapes all HTML entities in the input
-          // before applying markdown formatting, preventing XSS.
-          contentDiv.innerHTML = renderMarkdown(msg.content) // eslint-disable-line no-unsanitized/property
-        } else {
-          contentDiv.textContent = msg.content
+      // Collect consecutive assistant messages
+      var groupStart = i
+      while (i < messages.length && isAssistantMsg(messages[i])) {
+        i++
+      }
+      var groupEnd = i
+      var groupLen = groupEnd - groupStart
+
+      if (groupLen <= 2) {
+        // 1-2 assistant messages: show all
+        for (var k = groupStart; k < groupEnd; k++) {
+          container.appendChild(renderMessageBlock(messages[k]))
         }
-        msgBlock.appendChild(contentDiv)
-      }
+      } else {
+        // 3+ assistant messages: show bookends, collapse middle
+        var firstMsg = messages[groupStart]
+        var lastMsg = messages[groupEnd - 1]
+        var middleCount = groupLen - 2
+        var middleToolCount = countToolCalls(messages.slice(groupStart + 1, groupEnd - 1))
 
-      // New Tools[] array rendering (from backend tool extraction)
-      if (msg.tools && msg.tools.length > 0) {
-        var toolsContainer = el("div", "tool-items")
-        for (var j = 0; j < msg.tools.length; j++) {
-          try {
-            var toolItem = ToolRenderers.renderTool(msg.tools[j])
-            toolsContainer.appendChild(toolItem)
-          } catch (err) {
-            console.error("ToolRenderers.renderTool failed for", msg.tools[j].name, err)
-            toolsContainer.appendChild(el("div", "tool-item tool-item--error", "[tool: " + msg.tools[j].name + "]"))
+        // First message (bookend start)
+        container.appendChild(renderMessageBlock(firstMsg))
+
+        // Collapsed middle section
+        var middleWrapper = el("div", "collapsed-steps")
+        var middleHidden = el("div", "collapsed-steps-content collapsed-steps--hidden")
+        for (var m = groupStart + 1; m < groupEnd - 1; m++) {
+          middleHidden.appendChild(renderMessageBlock(messages[m]))
+        }
+
+        // Expander button
+        var stepLabel = middleCount + (middleCount === 1 ? " step" : " steps")
+        if (middleToolCount > 0) {
+          stepLabel += ", " + middleToolCount + (middleToolCount === 1 ? " tool call" : " tool calls")
+        }
+        var expander = document.createElement("button")
+        expander.className = "collapsed-steps-toggle"
+        expander.setAttribute("type", "button")
+        expander.innerHTML = '<span class="collapsed-steps-icon">\u25B6</span> ' + stepLabel
+        expander.addEventListener("click", function (hidden, btn, label) {
+          return function () {
+            var isHidden = hidden.classList.toggle("collapsed-steps--hidden")
+            btn.innerHTML = '<span class="collapsed-steps-icon">' +
+              (isHidden ? '\u25B6' : '\u25BC') + '</span> ' + label
           }
-        }
-        msgBlock.appendChild(toolsContainer)
-      }
+        }(middleHidden, expander, stepLabel))
 
-      // Legacy single-tool rendering (backward compat)
-      if (!msg.tools && msg.toolName) {
-        try {
-          var toolEl = ToolRenderers.render(
-            msg.toolName,
-            msg.toolInput || null,
-            msg.toolResult || null,
-            msg.augment || null
-          )
-          var legacyItem = el("div", "tool-items")
-          var legacyWrap = el("div", "tool-item tool-item--success")
-          legacyWrap.appendChild(toolEl)
-          legacyItem.appendChild(legacyWrap)
-          msgBlock.appendChild(legacyItem)
-        } catch (err) {
-          console.error("ToolRenderers.render failed for", msg.toolName, err)
-        }
-      }
+        middleWrapper.appendChild(expander)
+        middleWrapper.appendChild(middleHidden)
+        container.appendChild(middleWrapper)
 
-      container.appendChild(msgBlock)
+        // Last message (bookend end)
+        container.appendChild(renderMessageBlock(lastMsg))
+      }
     }
 
     // Highlight code blocks and add copy buttons
