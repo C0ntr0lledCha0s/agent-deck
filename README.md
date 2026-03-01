@@ -294,7 +294,7 @@ Agent Deck works with any terminal-based AI tool:
 
 ## Installation
 
-**Works on:** macOS, Linux, Windows (WSL)
+**Works on:** macOS, Linux, Windows (WSL), Docker
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash
@@ -319,6 +319,88 @@ go install github.com/asheshgoplani/agent-deck/cmd/agent-deck@latest
 ```bash
 git clone https://github.com/asheshgoplani/agent-deck.git && cd agent-deck && make install
 ```
+
+**Docker**
+```bash
+git clone https://github.com/asheshgoplani/agent-deck.git && cd agent-deck
+make docker-build
+make docker-run
+# Dashboard: http://127.0.0.1:8420
+```
+
+</details>
+
+### Docker Deployment
+
+Run Agent Deck as a container for headless/server use (e.g., SaltBox, self-hosted servers). The container runs in headless mode (web dashboard only, no TUI) and can provision sibling Docker containers for MCP servers and sandboxed agent sessions.
+
+**Quick start:**
+
+```bash
+# 1. Configure
+cp .env.example .env
+# Edit .env: set DOMAIN and DOCKER_GID (run: stat -c '%g' /var/run/docker.sock)
+
+# 2. Start
+docker compose up -d --build
+
+# 3. Access
+# Dashboard: http://127.0.0.1:8420
+# With Traefik: https://agentdeck.yourdomain.com
+```
+
+**What's included:**
+- Multi-stage Dockerfile (Go build + Ubuntu 24.04 runtime with tmux)
+- Docker socket mount for provisioning sibling containers (MCP servers, sandboxes)
+- Named volume for persistent config and SQLite database
+- Traefik labels for automatic HTTPS routing (SaltBox compatible)
+- Non-root container user (`agentdeck`, UID 1000)
+
+**Environment variables (`.env`):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DOMAIN` | `example.com` | Domain for Traefik routing (`agentdeck.${DOMAIN}`) |
+| `DOCKER_GID` | `999` | Host Docker socket GID (`stat -c '%g' /var/run/docker.sock`) |
+
+**Makefile targets:**
+
+```bash
+make docker-build   # Build the Docker image
+make docker-run     # Build and run standalone (port 8420)
+make docker-up      # Start with docker-compose (includes Traefik labels)
+make docker-down    # Stop docker-compose stack
+```
+
+<details>
+<summary>Docker architecture details</summary>
+
+```
+Host (Docker Engine)
+├── agent-deck container
+│   ├── agent-deck binary (headless, port 8420)
+│   ├── tmux server (manages agent sessions)
+│   ├── SQLite DB (~/.agent-deck/profiles/default/state.db)
+│   └── Docker socket mount (/var/run/docker.sock)
+│
+├── agentdeck-mcp-* (sibling MCP server containers)
+│   └── Provisioned via Docker socket
+│
+├── agentdeck-sandbox-* (sibling sandbox containers)
+│   ├── Isolated filesystem (workspace only)
+│   ├── Restricted networking (iptables firewall)
+│   └── Resource limits (CPU/memory)
+│
+└── Traefik (reverse proxy)
+    └── Routes agentdeck.yourdomain.com → :8420
+```
+
+The Agent Deck container uses a Docker socket mount (`/var/run/docker.sock`) to provision **sibling containers** on the host Docker daemon — the same pattern used by Portainer and Traefik. This enables:
+
+- **MCP containers**: Pull and run MCP server images (`docker.io/mcp/*`) from the [Docker MCP Catalog](https://docs.docker.com/ai/mcp-catalog-and-toolkit/) as siblings
+- **Sandbox containers**: Isolated containers for agent sessions with restricted networking, filesystem isolation, and resource limits — a container-based alternative to [Docker Desktop Sandboxes](https://docs.docker.com/ai/sandboxes/) for headless Linux servers
+
+The `ContainerRuntime` interface (`internal/hub/workspace/runtime.go`) supports security hardening options: `SecurityOpts` (e.g., `no-new-privileges`), `CapAdd`/`CapDrop` (Linux capabilities), `NetworkMode` (network isolation), and `AutoRemove`. The `SelfNetworks` method enables network self-discovery so sibling containers can communicate with Agent Deck.
 
 </details>
 

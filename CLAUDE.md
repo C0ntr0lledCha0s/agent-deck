@@ -18,6 +18,10 @@ make lint               # Lint (requires golangci-lint)
 make ci                 # Run local CI via lefthook: lint + test + build in parallel
 make dev                # Auto-reload dev server (requires 'air')
 make run                # Run directly without reload
+make docker-build       # Build Docker image (agent-deck:latest)
+make docker-run         # Build + run Docker container (port 8420)
+make docker-up          # Start docker-compose stack (with Traefik labels)
+make docker-down        # Stop docker-compose stack
 ```
 
 ### Running a Single Test
@@ -130,6 +134,48 @@ cd internal/web && python3 -m http.server 8422 --bind 127.0.0.1
 # Open: http://127.0.0.1:8422/static/dashboard.html
 # API calls will 404 — this is expected, only the UI renders.
 ```
+
+## Docker Deployment
+
+Agent Deck can run as a Docker container for headless/server deployments (e.g., SaltBox). The container runs `agent-deck web --headless` and provisions sibling containers via the Docker socket.
+
+### Docker Files
+
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Multi-stage production build: `golang:1.24-alpine` (builder) → `ubuntu:24.04` (runtime with tmux) |
+| `docker-compose.yml` | Compose stack with Docker socket mount, named volume, Traefik labels |
+| `.env.example` | Template for `DOMAIN` (Traefik routing) and `DOCKER_GID` (socket permissions) |
+| `.dockerignore` | Excludes .git, build/, docs/, etc. from Docker context |
+
+### Running in Docker
+
+```bash
+# Standalone
+make docker-build && make docker-run
+# Dashboard: http://127.0.0.1:8420
+
+# With docker-compose (includes Traefik labels for SaltBox)
+cp .env.example .env
+# Edit .env: set DOMAIN, DOCKER_GID (run: stat -c '%g' /var/run/docker.sock)
+make docker-up
+```
+
+### Container Architecture
+
+- **Socket mount**: `/var/run/docker.sock` is mounted read-write for sibling container provisioning
+- **Non-root user**: runs as `agentdeck` (UID 1000); `group_add` in docker-compose.yml grants Docker socket access
+- **Persistence**: Named volume at `/home/agentdeck/.agent-deck` (config + SQLite state.db)
+- **Port**: 8420 (web dashboard, REST API, WebSocket PTY, SSE status)
+- **Entrypoint**: `agent-deck web --headless --listen 0.0.0.0:8420`
+
+### Container Runtime Interface
+
+`internal/hub/workspace/` provides the `ContainerRuntime` interface for provisioning sibling containers:
+
+- `runtime.go` — `ContainerRuntime` interface, `CreateOpts` (with `SecurityOpts`, `CapAdd`, `CapDrop`, `NetworkMode`, `AutoRemove`)
+- `docker.go` — Docker Engine API implementation; `SelfNetworks()` discovers the container's own networks for sibling communication
+- Used for MCP server containers (`docker.io/mcp/*`) and sandbox containers (isolated agent sessions)
 
 ## Git Hooks (lefthook)
 
