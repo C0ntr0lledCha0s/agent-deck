@@ -2547,7 +2547,7 @@
     }
     wrap.appendChild(header)
 
-    // Inline preview: IN / OUT
+    // Extract stdout/stderr
     var stdout = ""
     if (typeof result === "string") {
       stdout = result
@@ -2556,8 +2556,13 @@
     }
     var stderr = result && result.stderr ? result.stderr : ""
 
+    var hasLongContent = (stdout && stdout.length > 400) || (stderr && stderr.length > 400)
+    var preview = null
+    var body = null
+
+    // Inline preview: IN / OUT (truncated)
     if (command || stdout || stderr) {
-      var preview = el("div", "tool-preview")
+      preview = el("div", "tool-preview")
       var needsFade = false
 
       if (command) {
@@ -2597,28 +2602,40 @@
       wrap.appendChild(preview)
     }
 
-    // Full body (hidden, toggled by clicking header)
-    var body = el("div", "tool-body tool-collapsed")
-    if (command) {
-      var fullCmdPre = document.createElement("pre")
-      fullCmdPre.appendChild(document.createTextNode("$ " + command))
-      body.appendChild(fullCmdPre)
+    // Full body (only created when content exceeds preview truncation)
+    if (hasLongContent) {
+      body = el("div", "tool-body tool-collapsed")
+      if (command) {
+        var fullCmdPre = document.createElement("pre")
+        fullCmdPre.appendChild(document.createTextNode("$ " + command))
+        body.appendChild(fullCmdPre)
+      }
+      if (stdout) {
+        var fullOutPre = document.createElement("pre")
+        fullOutPre.appendChild(document.createTextNode(stdout))
+        body.appendChild(fullOutPre)
+      }
+      if (stderr) {
+        var fullErrPre = document.createElement("pre")
+        fullErrPre.className = "tool-stderr"
+        fullErrPre.appendChild(document.createTextNode(stderr))
+        body.appendChild(fullErrPre)
+      }
+      wrap.appendChild(body)
     }
-    if (stdout) {
-      var fullOutPre = document.createElement("pre")
-      fullOutPre.appendChild(document.createTextNode(stdout))
-      body.appendChild(fullOutPre)
-    }
-    if (stderr) {
-      var fullErrPre = document.createElement("pre")
-      fullErrPre.className = "tool-stderr"
-      fullErrPre.appendChild(document.createTextNode(stderr))
-      body.appendChild(fullErrPre)
-    }
-    wrap.appendChild(body)
 
     header.addEventListener("click", function () {
-      body.classList.toggle("tool-collapsed")
+      if (hasLongContent && body) {
+        // Toggle: show full body and hide preview, or vice versa
+        var isExpanded = !body.classList.contains("tool-collapsed")
+        if (isExpanded) {
+          body.classList.add("tool-collapsed")
+          if (preview) preview.style.display = ""
+        } else {
+          body.classList.remove("tool-collapsed")
+          if (preview) preview.style.display = "none"
+        }
+      }
     })
 
     return wrap
@@ -2647,10 +2664,14 @@
     }
     wrap.appendChild(header)
 
-    // Inline diff preview (visible by default, max 8 lines)
+    // Inline diff preview (visible by default, faded)
     var diffHtml = augment && augment.diffHtml ? augment.diffHtml : ""
+    var preview = null
+    var body = null
+    var hasFullContent = diffHtml.length > 500 || (!diffHtml && result)
+
     if (diffHtml) {
-      var preview = el("div", "tool-preview tool-preview--faded")
+      preview = el("div", "tool-preview tool-preview--faded")
       var diffContainer = document.createElement("div")
       diffContainer.setAttribute("data-server-rendered", "true")
       // Safe: diffHtml is pre-sanitized by server-side escapeHTML()
@@ -2659,22 +2680,33 @@
       wrap.appendChild(preview)
     }
 
-    // Full body (hidden)
-    var body = el("div", "tool-body tool-collapsed")
-    if (diffHtml) {
-      var fullDiff = document.createElement("div")
-      fullDiff.setAttribute("data-server-rendered", "true")
-      fullDiff.insertAdjacentHTML("beforeend", diffHtml)
-      body.appendChild(fullDiff)
-    } else if (result) {
-      var resultPre = document.createElement("pre")
-      resultPre.appendChild(document.createTextNode(typeof result === "string" ? result : JSON.stringify(result, null, 2)))
-      body.appendChild(resultPre)
+    // Full body (only when diff is long enough to warrant expansion)
+    if (hasFullContent) {
+      body = el("div", "tool-body tool-collapsed")
+      if (diffHtml) {
+        var fullDiff = document.createElement("div")
+        fullDiff.setAttribute("data-server-rendered", "true")
+        fullDiff.insertAdjacentHTML("beforeend", diffHtml)
+        body.appendChild(fullDiff)
+      } else if (result) {
+        var resultPre = document.createElement("pre")
+        resultPre.appendChild(document.createTextNode(typeof result === "string" ? result : JSON.stringify(result, null, 2)))
+        body.appendChild(resultPre)
+      }
+      wrap.appendChild(body)
     }
-    wrap.appendChild(body)
 
     header.addEventListener("click", function () {
-      body.classList.toggle("tool-collapsed")
+      if (body) {
+        var isExpanded = !body.classList.contains("tool-collapsed")
+        if (isExpanded) {
+          body.classList.add("tool-collapsed")
+          if (preview) preview.style.display = ""
+        } else {
+          body.classList.remove("tool-collapsed")
+          if (preview) preview.style.display = "none"
+        }
+      }
     })
 
     return wrap
@@ -2739,24 +2771,38 @@
     wrap.appendChild(header)
 
     // Preview first 4 matches
+    var preview = null
+    var body = null
+    var hasMore = matchLines.length > 4
+
     if (matchLines.length > 0) {
-      var preview = el("div", "tool-preview" + (matchLines.length > 4 ? " tool-preview--faded" : ""))
+      preview = el("div", "tool-preview" + (hasMore ? " tool-preview--faded" : ""))
       var previewPre = document.createElement("pre")
       previewPre.appendChild(document.createTextNode(matchLines.slice(0, 4).join("\n")))
       preview.appendChild(previewPre)
       wrap.appendChild(preview)
     }
 
-    var body = el("div", "tool-body tool-collapsed")
-    if (content) {
+    // Full body only when there are more than 4 matches
+    if (hasMore && content) {
+      body = el("div", "tool-body tool-collapsed")
       var fullPre = document.createElement("pre")
       fullPre.appendChild(document.createTextNode(content))
       body.appendChild(fullPre)
+      wrap.appendChild(body)
     }
-    wrap.appendChild(body)
 
     header.addEventListener("click", function () {
-      body.classList.toggle("tool-collapsed")
+      if (body) {
+        var isExpanded = !body.classList.contains("tool-collapsed")
+        if (isExpanded) {
+          body.classList.add("tool-collapsed")
+          if (preview) preview.style.display = ""
+        } else {
+          body.classList.remove("tool-collapsed")
+          if (preview) preview.style.display = "none"
+        }
+      }
     })
     return wrap
   })
@@ -3836,6 +3882,125 @@
       })
   }
 
+  // ── Lightweight markdown → HTML renderer ─────────────────────
+  // Handles: fenced code blocks, inline code, bold, italic, headers,
+  // unordered/ordered lists, links, and paragraphs.
+  function renderMarkdown(text) {
+    if (!text) return ""
+
+    // Escape HTML first
+    var escaped = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+
+    // Split into fenced code blocks and non-code sections
+    var parts = escaped.split(/(```[\s\S]*?```)/g)
+    var html = ""
+
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i]
+      if (part.indexOf("```") === 0 && part.lastIndexOf("```") > 3) {
+        // Fenced code block
+        var firstNewline = part.indexOf("\n")
+        var lang = firstNewline > 3 ? part.substring(3, firstNewline).trim() : ""
+        var code = firstNewline > 0 ? part.substring(firstNewline + 1) : part.substring(3)
+        // Remove trailing ```
+        code = code.replace(/```$/, "").replace(/\n$/, "")
+        var langClass = lang ? ' class="language-' + lang + '"' : ""
+        html += '<pre><code' + langClass + '>' + code + '</code></pre>'
+      } else {
+        // Process inline markdown
+        html += renderMarkdownInline(part)
+      }
+    }
+
+    return html
+  }
+
+  function renderMarkdownInline(text) {
+    var lines = text.split("\n")
+    var html = ""
+    var inList = false
+    var listType = ""
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i]
+
+      // Headers
+      var headerMatch = line.match(/^(#{1,6})\s+(.+)$/)
+      if (headerMatch) {
+        if (inList) { html += "</" + listType + ">"; inList = false }
+        var level = headerMatch[1].length
+        html += '<h' + level + '>' + inlineFormat(headerMatch[2]) + '</h' + level + '>'
+        continue
+      }
+
+      // Unordered list items
+      var ulMatch = line.match(/^(\s*)[*\-+]\s+(.+)$/)
+      if (ulMatch) {
+        if (!inList || listType !== "ul") {
+          if (inList) html += "</" + listType + ">"
+          html += "<ul>"; inList = true; listType = "ul"
+        }
+        html += '<li>' + inlineFormat(ulMatch[2]) + '</li>'
+        continue
+      }
+
+      // Ordered list items
+      var olMatch = line.match(/^(\s*)\d+\.\s+(.+)$/)
+      if (olMatch) {
+        if (!inList || listType !== "ol") {
+          if (inList) html += "</" + listType + ">"
+          html += "<ol>"; inList = true; listType = "ol"
+        }
+        html += '<li>' + inlineFormat(olMatch[2]) + '</li>'
+        continue
+      }
+
+      // Close list if we're no longer in one
+      if (inList && line.trim() === "") {
+        html += "</" + listType + ">"; inList = false
+        continue
+      }
+      if (inList && !ulMatch && !olMatch) {
+        html += "</" + listType + ">"; inList = false
+      }
+
+      // Horizontal rule
+      if (/^---+$/.test(line.trim())) {
+        html += '<hr>'
+        continue
+      }
+
+      // Empty lines
+      if (line.trim() === "") {
+        continue
+      }
+
+      // Regular paragraph text
+      html += '<p>' + inlineFormat(line) + '</p>'
+    }
+
+    if (inList) html += "</" + listType + ">"
+    return html
+  }
+
+  function inlineFormat(text) {
+    // Inline code (must come first to protect code content)
+    text = text.replace(/`([^`]+)`/g, '<code>$1</code>')
+    // Bold
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    text = text.replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    // Italic
+    text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    text = text.replace(/_([^_]+)_/g, '<em>$1</em>')
+    // Links [text](url)
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    return text
+  }
+
   function renderMessages(messages) {
     var container = document.getElementById("messages-container")
     if (!container) return
@@ -3861,7 +4026,14 @@
       // Message content text
       if (msg.content) {
         var contentDiv = el("div", "message-content")
-        contentDiv.textContent = msg.content
+        if (role === "assistant") {
+          // Render markdown for assistant messages.
+          // Safe: renderMarkdown() escapes all HTML entities in the input
+          // before applying markdown formatting, preventing XSS.
+          contentDiv.innerHTML = renderMarkdown(msg.content) // eslint-disable-line no-unsanitized/property
+        } else {
+          contentDiv.textContent = msg.content
+        }
         msgBlock.appendChild(contentDiv)
       }
 

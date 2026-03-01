@@ -234,6 +234,12 @@ func buildAugmentedMessages(dagMsgs []dag.SessionMessage) []augmentedMessage {
 
 	msgs := make([]augmentedMessage, 0, len(dagMsgs))
 	for _, m := range dagMsgs {
+		// Skip non-conversation entries (progress, system, file-history-snapshot, etc.).
+		// These are metadata entries in the JSONL that have no role or content.
+		if m.Role == "" && m.Content == "" {
+			continue
+		}
+
 		// Skip user messages that are purely tool_result containers (no text).
 		if m.Role == "user" && m.Content == "" && len(m.ToolResultBlocks) > 0 {
 			continue

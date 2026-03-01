@@ -29,14 +29,16 @@ func extra() {}
 	assert.Greater(t, aug.Deletions, 0, "should have deletions")
 	assert.Contains(t, aug.DiffHTML, "Goodbye", "DiffHTML should contain added text")
 	assert.Contains(t, aug.DiffHTML, "Hello", "DiffHTML should contain deleted text")
-	assert.Contains(t, aug.DiffHTML, "diff-add", "DiffHTML should use diff-add class")
-	assert.Contains(t, aug.DiffHTML, "diff-del", "DiffHTML should use diff-del class")
+	assert.Contains(t, aug.DiffHTML, "diff-add-line", "DiffHTML should use diff-add-line class")
+	assert.Contains(t, aug.DiffHTML, "diff-del-line", "DiffHTML should use diff-del-line class")
+	assert.Contains(t, aug.DiffHTML, "diff-ln", "DiffHTML should contain line numbers")
+	assert.Contains(t, aug.DiffHTML, "diff-table", "DiffHTML should wrap in diff-table")
 }
 
 func TestComputeEditAugment_EscapesHTML(t *testing.T) {
 	aug, err := computeEditAugment(`a < b`, `a > b`, "test.go")
 	require.NoError(t, err)
-	assert.NotContains(t, aug.DiffHTML, "<b", "raw < should be escaped")
+	assert.NotContains(t, aug.DiffHTML, "< b", "raw < should be escaped")
 	assert.Contains(t, aug.DiffHTML, "&lt;", "old text < should be escaped")
 	assert.Contains(t, aug.DiffHTML, "&gt;", "new text > should be escaped")
 }
