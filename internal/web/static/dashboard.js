@@ -3064,14 +3064,34 @@
         if (wrapper) {
           var pre = wrapper.querySelector("pre")
           if (pre) {
-            navigator.clipboard.writeText(pre.textContent).then(function () {
+            var text = pre.textContent
+            var showCopied = function () {
               copyBtn.textContent = "Copied!"
               copyBtn.classList.add("copied")
               setTimeout(function () {
                 copyBtn.textContent = "Copy"
                 copyBtn.classList.remove("copied")
               }, 1500)
-            })
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(showCopied).catch(function () {
+                copyBtn.textContent = "Failed"
+                setTimeout(function () { copyBtn.textContent = "Copy" }, 1500)
+              })
+            } else {
+              // Fallback for non-secure contexts (HTTP on LAN)
+              var ta = document.createElement("textarea")
+              ta.value = text
+              ta.style.position = "fixed"
+              ta.style.opacity = "0"
+              document.body.appendChild(ta)
+              ta.select()
+              try { document.execCommand("copy"); showCopied() } catch (err) {
+                copyBtn.textContent = "Failed"
+                setTimeout(function () { copyBtn.textContent = "Copy" }, 1500)
+              }
+              document.body.removeChild(ta)
+            }
           }
         }
         return

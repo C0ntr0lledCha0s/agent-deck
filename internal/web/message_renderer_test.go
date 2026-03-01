@@ -354,11 +354,10 @@ func TestRenderMessagesHTML_MarkdownXSS(t *testing.T) {
 	}
 	html, err := renderMessagesHTML(turns)
 	require.NoError(t, err)
-	// goldmark with WithUnsafe passes raw HTML through, but the content
-	// itself is rendered as markdown; verify the script tag appears
-	// (since we use WithUnsafe for code block rendering). In production,
-	// CSP headers provide the XSS boundary.
 	assert.Contains(t, html, "Safe text")
+	// goldmark safe mode strips raw HTML — script tags must not appear.
+	assert.NotContains(t, html, "<script>")
+	assert.Contains(t, html, "<!-- raw HTML omitted -->")
 }
 
 func TestRenderMessagesHTML_CollapsesLongTurns(t *testing.T) {

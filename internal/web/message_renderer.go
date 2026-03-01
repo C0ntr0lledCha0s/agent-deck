@@ -12,7 +12,6 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/highlight"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/renderer/html"
 )
 
 // contentBlock represents a single content block from a Claude Code message.
@@ -292,9 +291,18 @@ func collapseMiddleBlocks(turn *renderedTurn) {
 		return
 	}
 
-	turn.HeadBlocks = turn.Blocks[:middleStart]
-	turn.MiddleBlocks = turn.Blocks[middleStart:middleEnd]
-	turn.TailBlocks = turn.Blocks[middleEnd:]
+	// Copy sub-slices so they don't share backing array with turn.Blocks.
+	head := turn.Blocks[:middleStart]
+	turn.HeadBlocks = make([]contentBlock, len(head))
+	copy(turn.HeadBlocks, head)
+
+	mid := turn.Blocks[middleStart:middleEnd]
+	turn.MiddleBlocks = make([]contentBlock, len(mid))
+	copy(turn.MiddleBlocks, mid)
+
+	tail := turn.Blocks[middleEnd:]
+	turn.TailBlocks = make([]contentBlock, len(tail))
+	copy(turn.TailBlocks, tail)
 	turn.MiddleToolCount = toolCount
 	turn.Collapsed = true
 }
@@ -385,16 +393,15 @@ func cleanUserText(s string) string {
 }
 
 // mdRenderer is a goldmark instance configured for safe markdown rendering.
+// Raw HTML in markdown source is escaped by default (goldmark safe mode).
+// The chromaHighlighter extension generates its own trusted HTML for code blocks.
 var mdRenderer = goldmark.New(
 	goldmark.WithExtensions(extension.GFM, &chromaHighlighter{}),
-	goldmark.WithRendererOptions(html.WithUnsafe()),
 )
 
-// renderMarkdown converts markdown text to HTML. Raw HTML in the source is
-// passed through (goldmark's GFM extension handles sanitisation via
-// autolink/strikethrough/table support). We use WithUnsafe so that code
-// blocks and inline HTML entities render correctly; the template already
-// applies auto-escaping for user-prompt text blocks.
+// renderMarkdown converts markdown text to HTML. Raw HTML tags in the source
+// are escaped by goldmark's default safe mode, preventing XSS from assistant
+// responses that contain script tags or other HTML.
 func renderMarkdown(text string) template.HTML {
 	var buf bytes.Buffer
 	if err := mdRenderer.Convert([]byte(text), &buf); err != nil {
@@ -436,6 +443,9 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 		return len(lines) > 12 || len(s) > 1200
 	},
 	"middleSummary": func(count int) string {
+		if count == 1 {
+			return "1 tool call"
+		}
 		return fmt.Sprintf("%d tool calls", count)
 	},
 }).Parse(assistantBlockTpl + `{{if not .}}<div class="messages-empty">No messages yet.</div>
