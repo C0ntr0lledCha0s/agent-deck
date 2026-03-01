@@ -3157,3 +3157,43 @@ details[open] > .collapsible__summary .collapsible__icon {
     padding: 8px 10px;
   }
 }
+
+/* ── Toast notifications ──────────────────────────────────────── */
+
+.toast {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  z-index: 10000;
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  pointer-events: none;
+  max-width: 400px;
+  text-align: center;
+}
+
+.toast--visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast--info {
+  background: var(--accent-color, #e8a932);
+  color: #000;
+}
+
+.toast--success {
+  background: #2dd4a0;
+  color: #000;
+}
+
+.toast--error {
+  background: #f06060;
+  color: #fff;
+}

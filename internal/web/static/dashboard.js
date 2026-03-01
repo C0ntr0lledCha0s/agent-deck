@@ -1813,13 +1813,29 @@
   // ── Task action functions ─────────────────────────────────────────
   function restartTask(taskId) {
     var headers = authHeaders()
+    showToast("Restarting session\u2026", "info")
     fetch(apiPathWithToken("/api/tasks/" + taskId + "/restart"), {
       method: "POST",
       headers: headers,
     })
-      .then(function (r) { return r.json() })
-      .then(function () { fetchTasks() })
-      .catch(function (err) { console.error("restart:", err) })
+      .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data } }) })
+      .then(function (result) {
+        if (result.data.status === "restarted") {
+          showToast("Session restarted", "success")
+          fetchTasks()
+          // Reconnect terminal after a brief delay for the session to initialize
+          setTimeout(function () {
+            var task = findTask(taskId)
+            if (task) connectTerminal(task)
+          }, 2000)
+        } else {
+          showToast("Restart failed: " + (result.data.message || "unknown error"), "error")
+        }
+      })
+      .catch(function (err) {
+        console.error("restart:", err)
+        showToast("Restart failed: " + err.message, "error")
+      })
   }
 
   function confirmDeleteTask(taskId) {
@@ -3228,10 +3244,13 @@
             setTimeout(function () { loadSessionMessages(msgSessionId) }, 1500)
             setTimeout(function () { loadSessionMessages(msgSessionId) }, 5000)
           }
+        } else if (data && data.status === "queued") {
+          showToast("No active session \u2014 try restarting first", "error")
         }
       })
       .catch(function (err) {
         console.error("sendTaskInput:", err)
+        showToast("Failed to send: " + err.message, "error")
       })
   }
 
@@ -3250,6 +3269,21 @@
       .catch(function (err) {
         console.error("sendConductorMessage:", err)
       })
+  }
+
+  // ── Toast notifications ──────────────────────────────────────────
+  function showToast(message, type) {
+    var toast = document.createElement("div")
+    toast.className = "toast toast--" + (type || "info")
+    toast.textContent = message
+    document.body.appendChild(toast)
+    // Trigger reflow then add visible class for animation
+    toast.offsetHeight // eslint-disable-line no-unused-expressions
+    toast.classList.add("toast--visible")
+    setTimeout(function () {
+      toast.classList.remove("toast--visible")
+      setTimeout(function () { toast.remove() }, 300)
+    }, type === "error" ? 4000 : 2500)
   }
 
   // ── Utilities ─────────────────────────────────────────────────────
