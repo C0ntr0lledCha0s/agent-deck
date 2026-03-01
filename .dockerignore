@@ -1,0 +1,12 @@
+.git
+.github
+.devcontainer
+.worktrees
+.claude
+build/
+docs/
+*.md
+!go.sum
+lefthook.yml
+.goreleaser.yml
+.air.toml
