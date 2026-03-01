@@ -2,10 +2,13 @@ package web
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/highlight"
 )
 
 //go:embed static/*
@@ -112,6 +115,65 @@ func (s *Server) handleServiceWorker(w http.ResponseWriter, r *http.Request) {
 	); err != nil {
 		http.Error(w, "service worker unavailable", http.StatusInternalServerError)
 	}
+}
+
+// syntaxCSS is computed once at import time from the highlight package.
+var syntaxCSS = []byte(highlight.CSSVariables())
+
+// handleSyntaxCSS serves the Chroma syntax highlighting CSS needed by
+// server-rendered highlighted code (Read tool, code blocks).
+func (s *Server) handleSyntaxCSS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(syntaxCSS)
+}
+
+// handleHighlight accepts a batch of code snippets and returns syntax-highlighted
+// HTML using Chroma. POST /api/highlight with JSON body:
+//
+//	{"blocks": [{"code": "...", "language": "go"}, ...]}
+//
+// Returns: {"blocks": [{"html": "<span class=\"chroma\">...</span>"}, ...]}
+func (s *Server) handleHighlight(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+
+	var req struct {
+		Blocks []struct {
+			Code     string `json:"code"`
+			Language string `json:"language"`
+		} `json:"blocks"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON")
+		return
+	}
+
+	type resultBlock struct {
+		HTML string `json:"html"`
+	}
+	results := make([]resultBlock, len(req.Blocks))
+	for i, b := range req.Blocks {
+		lang := b.Language
+		if lang == "" {
+			lang = "plaintext"
+		}
+		highlighted, err := highlight.Code(b.Code, lang)
+		if err != nil {
+			results[i] = resultBlock{HTML: escapeHTML(b.Code)}
+			continue
+		}
+		results[i] = resultBlock{HTML: highlighted}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"blocks": results})
 }
 
 func serveEmbeddedFile(w http.ResponseWriter, path, contentType string, headers map[string]string) error {

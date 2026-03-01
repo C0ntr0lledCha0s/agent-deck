@@ -4001,6 +4001,76 @@
     return text
   }
 
+  // ── Code block highlighting + copy buttons ───────────────────
+  // After rendering messages, find fenced code blocks and:
+  // 1. Add a copy button to each <pre> block
+  // 2. Batch-send code blocks to /api/highlight for syntax highlighting
+  function highlightCodeBlocks(container) {
+    var codeBlocks = container.querySelectorAll("pre code[class*='language-']")
+    if (codeBlocks.length === 0) {
+      // Still add copy buttons to plain code blocks
+      addCopyButtons(container)
+      return
+    }
+
+    // Build batch request
+    var blocks = []
+    var elements = []
+    for (var i = 0; i < codeBlocks.length; i++) {
+      var codeEl = codeBlocks[i]
+      var langMatch = codeEl.className.match(/language-(\S+)/)
+      var lang = langMatch ? langMatch[1] : ""
+      blocks.push({ code: codeEl.textContent, language: lang })
+      elements.push(codeEl)
+    }
+
+    // Fire-and-forget highlight request
+    fetch("/api/highlight", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ blocks: blocks })
+    })
+    .then(function (r) { return r.json() })
+    .then(function (data) {
+      if (data.blocks) {
+        for (var i = 0; i < data.blocks.length && i < elements.length; i++) {
+          if (data.blocks[i].html) {
+            // Replace code element content with highlighted HTML
+            elements[i].innerHTML = data.blocks[i].html // eslint-disable-line no-unsanitized/property
+            elements[i].classList.add("highlighted")
+          }
+        }
+      }
+    })
+    .catch(function () { /* highlighting is optional */ })
+
+    addCopyButtons(container)
+  }
+
+  function addCopyButtons(container) {
+    var preBlocks = container.querySelectorAll(".message-content pre")
+    for (var i = 0; i < preBlocks.length; i++) {
+      var pre = preBlocks[i]
+      pre.style.position = "relative"
+
+      var btn = document.createElement("button")
+      btn.className = "code-copy-btn"
+      btn.textContent = "Copy"
+      btn.setAttribute("type", "button")
+      btn.addEventListener("click", (function (targetPre) {
+        return function (e) {
+          var code = targetPre.querySelector("code")
+          var text = code ? code.textContent : targetPre.textContent
+          navigator.clipboard.writeText(text).then(function () {
+            e.target.textContent = "Copied!"
+            setTimeout(function () { e.target.textContent = "Copy" }, 1500)
+          })
+        }
+      })(pre))
+      pre.appendChild(btn)
+    }
+  }
+
   function renderMessages(messages) {
     var container = document.getElementById("messages-container")
     if (!container) return
@@ -4018,10 +4088,12 @@
       var variant = role === "user" ? "--user" : "--assistant"
       var msgBlock = el("div", "message-block message-block" + variant)
 
-      // Role label
-      var roleLabel = el("div", "message-role")
-      roleLabel.textContent = role.charAt(0).toUpperCase() + role.slice(1)
-      msgBlock.appendChild(roleLabel)
+      // Role label (only for user messages — assistant is the default)
+      if (role === "user") {
+        var roleLabel = el("div", "message-role")
+        roleLabel.textContent = "You"
+        msgBlock.appendChild(roleLabel)
+      }
 
       // Message content text
       if (msg.content) {
@@ -4073,6 +4145,9 @@
 
       container.appendChild(msgBlock)
     }
+
+    // Highlight code blocks and add copy buttons
+    highlightCodeBlocks(container)
 
     // Scroll to bottom
     container.scrollTop = container.scrollHeight

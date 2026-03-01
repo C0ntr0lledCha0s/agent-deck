@@ -130,6 +130,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/terminal", s.handleTerminal)
 	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
 	mux.HandleFunc("/sw.js", s.handleServiceWorker)
+	mux.HandleFunc("/static/syntax.css", s.handleSyntaxCSS)
 	mux.Handle("/static/", http.StripPrefix("/static/", s.staticFileServer()))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -157,6 +158,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/templates/", s.handleTemplateByName)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/workspaces/", s.handleWorkspaceByName)
+	mux.HandleFunc("/api/highlight", s.handleHighlight)
 	mux.HandleFunc("/api/route", s.handleRoute)
 	mux.HandleFunc("/api/push/config", s.handlePushConfig)
 	mux.HandleFunc("/api/push/subscribe", s.handlePushSubscribe)

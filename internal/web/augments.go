@@ -216,11 +216,12 @@ func computeBashAugment(stdout, stderr string, exitCode int) *bashAugment {
 	}
 }
 
-// computeReadAugment syntax-highlights the file content and returns metadata.
+// computeReadAugment syntax-highlights the file content with line numbers
+// and returns metadata.
 func computeReadAugment(content, filename string) (*readAugment, error) {
 	lang := highlight.DetectLanguage(filename)
 
-	highlighted, err := highlight.Code(content, lang)
+	highlighted, err := highlight.CodeWithLineNumbers(content, lang)
 	if err != nil {
 		return nil, err
 	}

@@ -1944,59 +1944,40 @@
 
 .message-block {
   position: relative;
-  margin-bottom: 2px;
-  padding: 8px 12px 8px 28px;
+  margin-bottom: 4px;
+  padding: 6px 12px;
 }
 
-.message-block::before {
-  content: "";
-  position: absolute;
-  left: 8px;
-  top: 14px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
-  z-index: 1;
+/* Assistant messages: no decoration, just content */
+.message-block--assistant {
+  padding-left: 12px;
 }
 
-.message-block::after {
-  content: "";
-  position: absolute;
-  left: 11px;
-  top: 22px;
-  bottom: 0;
-  width: 2px;
-  background: var(--border);
+/* User messages: pill/bubble style */
+.message-block--user {
+  display: inline-block;
+  max-width: 85%;
+  background: rgba(96, 165, 250, 0.08);
+  border: 1px solid rgba(96, 165, 250, 0.15);
+  border-radius: 16px;
+  padding: 8px 16px;
+  margin-bottom: 8px;
 }
 
-.message-block:last-child::after {
+/* Role label: hidden for assistant, shown as small tag for user */
+.message-role {
   display: none;
 }
 
-.message-block--user::before {
-  background: var(--blue);
-}
-
-.message-block--assistant::before {
-  background: var(--accent);
-}
-
-.message-role {
-  font-size: 0.72rem;
+.message-block--user .message-role {
+  display: block;
+  font-size: 0.65rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--muted);
-  margin-bottom: 4px;
-}
-
-.message-block--user .message-role {
   color: var(--blue);
-}
-
-.message-block--assistant .message-role {
-  color: var(--accent);
+  margin-bottom: 2px;
+  opacity: 0.7;
 }
 
 .message-content {
@@ -2049,6 +2030,33 @@
   border-radius: 0;
   color: var(--text);
 }
+.message-content pre code.highlighted {
+  color: inherit;
+}
+
+/* Copy button on code blocks */
+.code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.08);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms;
+}
+.message-content pre:hover .code-copy-btn {
+  opacity: 1;
+}
+.code-copy-btn:hover {
+  background: rgba(255,255,255,0.15);
+  color: var(--text);
+}
 .message-content strong {
   font-weight: 600;
   color: var(--text);
@@ -2064,8 +2072,15 @@
   margin: 0.3em 0 0.5em 0;
   padding-left: 1.5em;
 }
+.message-content ol {
+  list-style-type: decimal;
+}
+.message-content ul {
+  list-style-type: disc;
+}
 .message-content li {
   margin-bottom: 0.2em;
+  display: list-item;
 }
 .message-content hr {
   border: none;
@@ -2325,6 +2340,34 @@
 .diff-del {
   background: rgba(239, 68, 68, 0.1);
   color: var(--red);
+}
+
+/* ── Chroma syntax highlighting (line numbers, code blocks) ───── */
+
+.chroma {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.chroma .line {
+  display: block;
+  white-space: pre;
+}
+
+.chroma .ln {
+  display: inline-block;
+  width: 3.5ch;
+  text-align: right;
+  user-select: none;
+  padding-right: 8px;
+  opacity: 0.5;
+}
+
+.chroma .cl {
+  white-space: pre;
 }
 
 /* ── Upload progress ──────────────────────────────────────────── */

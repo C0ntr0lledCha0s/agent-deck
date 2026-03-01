@@ -25,6 +25,9 @@ var (
 	// formatter outputs CSS class names, not inline styles.
 	formatter = html.New(html.WithClasses(true), html.TabWidth(4))
 
+	// formatterLN is like formatter but includes line numbers.
+	formatterLN = html.New(html.WithClasses(true), html.TabWidth(4), html.WithLineNumbers(true))
+
 	// style is used only for CSS class generation; actual colours come from
 	// CSS variables injected by CSSVariables().
 	style = styles.Get("monokai")
@@ -73,6 +76,45 @@ func Code(code, language string) (string, error) {
 	result := buf.String()
 
 	// Store in cache with clear-on-full eviction.
+	cacheMu.Lock()
+	if len(cache) >= maxCacheSize {
+		cache = make(map[string]string, maxCacheSize)
+	}
+	cache[key] = result
+	cacheMu.Unlock()
+
+	return result, nil
+}
+
+// CodeWithLineNumbers is like Code but includes line numbers in the output.
+func CodeWithLineNumbers(code, language string) (string, error) {
+	key := cacheKey(code, language+":ln")
+
+	cacheMu.RLock()
+	if cached, ok := cache[key]; ok {
+		cacheMu.RUnlock()
+		return cached, nil
+	}
+	cacheMu.RUnlock()
+
+	lexer := lexers.Get(language)
+	if lexer == nil {
+		lexer = lexers.Fallback
+	}
+	lexer = chroma.Coalesce(lexer)
+
+	iterator, err := lexer.Tokenise(nil, code)
+	if err != nil {
+		return "", fmt.Errorf("highlight: tokenise: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := formatterLN.Format(&buf, style, iterator); err != nil {
+		return "", fmt.Errorf("highlight: format: %w", err)
+	}
+
+	result := buf.String()
+
 	cacheMu.Lock()
 	if len(cache) >= maxCacheSize {
 		cache = make(map[string]string, maxCacheSize)
