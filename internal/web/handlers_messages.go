@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -31,9 +32,9 @@ type augmentedMessage struct {
 
 // messagesResponse is the JSON response for /api/messages/{id}.
 type messagesResponse struct {
-	SessionID string              `json:"sessionId"`
-	Messages  []augmentedMessage  `json:"messages"`
-	DAGInfo   messagesDAGInfo     `json:"dagInfo"`
+	SessionID string             `json:"sessionId"`
+	Messages  []augmentedMessage `json:"messages"`
+	DAGInfo   messagesDAGInfo    `json:"dagInfo"`
 }
 
 // messagesDAGInfo contains DAG metadata about the conversation.
@@ -41,11 +42,14 @@ type messagesDAGInfo struct {
 	TotalNodes int `json:"totalNodes"`
 }
 
-// handleSessionMessages serves GET /api/messages/{sessionID}.
-// It locates the Claude Code JSONL conversation directory for the session's
-// project path, reads the active branch via the dag package, and returns
-// the messages as JSON.
+// handleSessionMessages serves GET /api/messages/{sessionID} (JSON) and
+// GET /api/messages/{sessionID}/html (server-rendered HTML fragment).
 func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/html") {
+		s.handleSessionMessagesHTML(w, r)
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
@@ -66,50 +70,10 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up the session to get its ProjectPath.
-	snapshot, err := s.menuData.LoadMenuSnapshot()
+	sessionDir, err := s.resolveSessionDir(r, sessionID)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load session data")
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 		return
-	}
-
-	var projectPath string
-	var tmuxSession string
-	found := false
-	for _, item := range snapshot.Items {
-		if item.Type != MenuItemTypeSession || item.Session == nil {
-			continue
-		}
-		if item.Session.ID != sessionID {
-			continue
-		}
-		projectPath = item.Session.ProjectPath
-		tmuxSession = item.Session.TmuxSession
-		found = true
-		break
-	}
-
-	if !found {
-		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
-		return
-	}
-
-	if projectPath == "" {
-		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session has no project path")
-		return
-	}
-
-	// Locate the Claude Code session directory for this project.
-	sessionDir := s.findClaudeSessionDir(projectPath)
-
-	// Fallback: if the configured projectPath doesn't match a Claude projects
-	// directory, query the tmux pane's actual working directory. This handles
-	// hub-launched sessions where the configured path differs from where Claude
-	// Code was actually started.
-	if sessionDir == "" && tmuxSession != "" {
-		if actualPath := tmuxPaneCurrentPath(r.Context(), tmuxSession); actualPath != "" && actualPath != projectPath {
-			sessionDir = s.findClaudeSessionDir(actualPath)
-		}
 	}
 
 	if sessionDir == "" {
@@ -159,6 +123,131 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		Messages:  msgs,
 		DAGInfo:   messagesDAGInfo{TotalNodes: result.TotalNodes},
 	})
+}
+
+// handleSessionMessagesHTML serves GET /api/messages/{sessionID}/html.
+// Returns a pre-rendered HTML fragment of the conversation.
+func (s *Server) handleSessionMessagesHTML(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+
+	// Extract session ID: /api/messages/{sessionID}/html
+	path := r.URL.Path
+	const prefix = "/api/messages/"
+	const suffix = "/html"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	sessionID := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
+	if sessionID == "" || strings.Contains(sessionID, "/") {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "session id is required")
+		return
+	}
+
+	sessionDir, err := s.resolveSessionDir(r, sessionID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+
+	if sessionDir == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<div class="messages-empty">No messages yet.</div>`))
+		return
+	}
+
+	result, err := dag.ReadSessionFull(sessionDir)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to read conversation")
+		return
+	}
+
+	if result == nil || len(result.Messages) == 0 {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<div class="messages-empty">No messages yet.</div>`))
+		return
+	}
+
+	// Parse messages into dagMessages with content blocks.
+	// Limit to most recent 200 messages to bound memory and response size.
+	msgs := result.Messages
+	const maxRenderedMessages = 200
+	if len(msgs) > maxRenderedMessages {
+		msgs = msgs[len(msgs)-maxRenderedMessages:]
+	}
+
+	var dagMsgs []dagMessage
+	for _, m := range msgs {
+		blocks := parseContentBlocks(m.Message)
+		dagMsgs = append(dagMsgs, dagMessage{
+			Role:   m.Role,
+			Blocks: blocks,
+			Time:   m.Timestamp,
+		})
+	}
+
+	// Group into turns and pair tool results.
+	turns := groupIntoTurns(dagMsgs)
+	for i := range turns {
+		turns[i].Blocks = pairToolResults(turns[i].Blocks)
+	}
+
+	html, err := renderMessagesHTML(turns)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to render messages")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(html))
+}
+
+// resolveSessionDir finds the Claude Code session directory for the given
+// session ID. Returns empty string if no conversation data exists, or error
+// if the session is not found at all.
+func (s *Server) resolveSessionDir(r *http.Request, sessionID string) (string, error) {
+	snapshot, err := s.menuData.LoadMenuSnapshot()
+	if err != nil {
+		return "", fmt.Errorf("failed to load session data")
+	}
+
+	var projectPath, tmuxSession string
+	found := false
+	for _, item := range snapshot.Items {
+		if item.Type != MenuItemTypeSession || item.Session == nil {
+			continue
+		}
+		if item.Session.ID != sessionID {
+			continue
+		}
+		projectPath = item.Session.ProjectPath
+		tmuxSession = item.Session.TmuxSession
+		found = true
+		break
+	}
+
+	if !found {
+		return "", fmt.Errorf("session not found")
+	}
+	if projectPath == "" {
+		return "", fmt.Errorf("session has no project path")
+	}
+
+	sessionDir := s.findClaudeSessionDir(projectPath)
+	if sessionDir == "" && tmuxSession != "" {
+		if actualPath := tmuxPaneCurrentPath(r.Context(), tmuxSession); actualPath != "" && actualPath != projectPath {
+			sessionDir = s.findClaudeSessionDir(actualPath)
+		}
+	}
+
+	return sessionDir, nil
 }
 
 // findClaudeSessionDir locates the Claude Code projects directory for the

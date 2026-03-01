@@ -17,6 +17,17 @@
   --orange: #f59e0b;
   --term-bg: #080a0e;
   --term-text: #c8d0dc;
+  --bg-user-message: #484848;
+  --thinking-color: #d97706;
+  --code-bg: #1a1e2a;
+  --inline-code-bg: rgba(255, 255, 255, 0.08);
+  --timeline-dot-default: #9d9d9d;
+  --timeline-dot-tool: #74c991;
+  --timeline-dot-error: #c74e39;
+  --timeline-dot-working: #d97757;
+  --timeline-line-color: #3c3c3c;
+  --bg-hover: #2a2a2a;
+  --border-color: #3c3c3c;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'IBM Plex Mono', monospace;
   --font-sans: 'IBM Plex Sans', -apple-system, sans-serif;
   --topbar-height: 48px;

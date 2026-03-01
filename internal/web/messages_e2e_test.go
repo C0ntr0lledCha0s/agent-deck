@@ -379,3 +379,95 @@ func TestTerminalAndMessagesE2E(t *testing.T) {
 		assert.Equal(t, "Running tests now...", resp.Messages[1].Content)
 	})
 }
+
+// TestHandleMessagesHTML_Integration tests the /api/messages/{id}/html endpoint
+// end-to-end with synthetic JSONL data.
+func TestHandleMessagesHTML_Integration(t *testing.T) {
+	claudeDir := t.TempDir()
+	projectPath := "/home/testuser/myproject"
+
+	entries := []map[string]any{
+		{
+			"uuid": "a", "parentUuid": "", "type": "human",
+			"message":   map[string]any{"role": "user", "content": "hello"},
+			"timestamp": "2025-01-01T00:00:00Z",
+		},
+		{
+			"uuid": "b", "parentUuid": "a", "type": "assistant",
+			"message": map[string]any{"role": "assistant", "content": []map[string]any{
+				{"type": "text", "text": "hi there"},
+			}},
+			"timestamp": "2025-01-01T00:00:01Z",
+		},
+	}
+	writeTestJSONL(t, claudeDir, projectPath, entries)
+
+	srv := newServerWithMessages(t, "sess-1", projectPath, claudeDir)
+	req := httptest.NewRequest("GET", "/api/messages/sess-1/html", nil)
+	rec := httptest.NewRecorder()
+	srv.handleSessionMessages(rec, req)
+
+	require.Equal(t, 200, rec.Code)
+	assert.Equal(t, "text/html; charset=utf-8", rec.Header().Get("Content-Type"))
+	body := rec.Body.String()
+	assert.Contains(t, body, "user-prompt-container")
+	assert.Contains(t, body, "hello")
+	assert.Contains(t, body, "assistant-turn")
+	assert.Contains(t, body, "hi there")
+}
+
+// TestMessagesE2E_HTMLRendering exercises the full HTML rendering pipeline:
+// user prompt, assistant thinking, text, tool use with result pairing.
+func TestMessagesE2E_HTMLRendering(t *testing.T) {
+	claudeDir := t.TempDir()
+	projectPath := "/home/testuser/myproject"
+
+	entries := []map[string]any{
+		{
+			"uuid": "a", "parentUuid": "", "type": "human",
+			"message":   map[string]any{"role": "user", "content": "write tests"},
+			"timestamp": "2025-01-01T00:00:00Z",
+		},
+		{
+			"uuid": "b", "parentUuid": "a", "type": "assistant",
+			"message": map[string]any{"role": "assistant", "content": []map[string]any{
+				{"type": "thinking", "thinking": "I need to write tests"},
+				{"type": "text", "text": "Here are the tests"},
+				{"type": "tool_use", "id": "t1", "name": "Bash", "input": map[string]any{"command": "go test ./..."}},
+			}},
+			"timestamp": "2025-01-01T00:00:01Z",
+		},
+		{
+			"uuid": "c", "parentUuid": "b", "type": "human",
+			"message": map[string]any{"role": "user", "content": []map[string]any{
+				{"type": "tool_result", "tool_use_id": "t1", "content": "PASS"},
+			}},
+			"timestamp": "2025-01-01T00:00:02Z",
+		},
+	}
+	writeTestJSONL(t, claudeDir, projectPath, entries)
+
+	srv := newServerWithMessages(t, "sess-html", projectPath, claudeDir)
+	req := httptest.NewRequest("GET", "/api/messages/sess-html/html", nil)
+	rec := httptest.NewRecorder()
+	srv.handleSessionMessages(rec, req)
+
+	require.Equal(t, 200, rec.Code)
+	body := rec.Body.String()
+
+	// User prompt renders as bubble
+	assert.Contains(t, body, "user-prompt-container")
+	assert.Contains(t, body, "write tests")
+
+	// Assistant turn with thinking, text, and tool
+	assert.Contains(t, body, "assistant-turn")
+	assert.Contains(t, body, "thinking-block")
+	assert.Contains(t, body, "I need to write tests")
+	assert.Contains(t, body, "Here are the tests")
+	assert.Contains(t, body, "tool-row timeline-item")
+	assert.Contains(t, body, "tool-row-header")
+	assert.Contains(t, body, "go test ./...")
+
+	// Tool result paired with tool use
+	assert.Contains(t, body, "PASS")
+}
