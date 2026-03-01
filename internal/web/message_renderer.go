@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/highlight"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/renderer/html"
@@ -21,6 +22,7 @@ type contentBlock struct {
 	ToolUseID      string          // tool_use id or tool_use_id reference
 	ToolInput      json.RawMessage // raw input JSON (for tool_use)
 	ToolResultText string          // paired tool_result text (populated by pairToolResults)
+	ToolResultHTML template.HTML   // pre-rendered HTML for tool output (highlighted or escaped)
 }
 
 // parseContentBlocks extracts structured content blocks from a Claude Code
@@ -201,11 +203,47 @@ func pairToolResults(blocks []contentBlock) []contentBlock {
 		if b.Type == "tool_use" && b.ToolUseID != "" {
 			if text, ok := resultMap[b.ToolUseID]; ok {
 				b.ToolResultText = text
+				b.ToolResultHTML = highlightToolOutput(b.ToolName, b.ToolInput, text)
 			}
 		}
 		out = append(out, b)
 	}
 	return out
+}
+
+// highlightToolOutput produces syntax-highlighted or diff-rendered HTML
+// for tool results based on the tool name and input.
+func highlightToolOutput(toolName string, input json.RawMessage, text string) template.HTML {
+	if text == "" {
+		return ""
+	}
+
+	var m map[string]interface{}
+	if len(input) > 0 {
+		_ = json.Unmarshal(input, &m)
+	}
+
+	switch toolName {
+	case "Read", "Write":
+		if fp, ok := m["file_path"].(string); ok {
+			lang := highlight.DetectLanguage(fp)
+			if lang != "" {
+				if highlighted, err := highlight.Code(text, lang); err == nil {
+					return template.HTML(highlighted)
+				}
+			}
+		}
+	case "Edit":
+		if oldStr, ok := m["old_string"].(string); ok {
+			if newStr, ok := m["new_string"].(string); ok {
+				if aug, err := computeEditAugment(oldStr, newStr, ""); err == nil {
+					return template.HTML(`<pre class="tool-output tool-output-diff">` + aug.DiffHTML + `</pre>`)
+				}
+			}
+		}
+	}
+
+	return template.HTML(template.HTMLEscapeString(text))
 }
 
 // shortenPath trims an absolute file path to at most the last n path
@@ -357,7 +395,8 @@ var messagesTemplate = template.Must(template.New("messages").Funcs(template.Fun
 	`<span class="expand-chevron">▸</span>` +
 	`</div>` +
 	`<div class="tool-row-content tool-collapsed">` +
-	`{{if .ToolResultText}}<pre class="tool-output">{{.ToolResultText}}</pre>{{end}}` +
+	`{{if .ToolResultHTML}}<div class="tool-output-wrap">{{.ToolResultHTML}}</div>` +
+	`{{else if .ToolResultText}}<pre class="tool-output">{{.ToolResultText}}</pre>{{end}}` +
 	`</div>` +
 	`</div>` +
 	`{{end}}` +

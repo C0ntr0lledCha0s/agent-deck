@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"html/template"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -289,6 +290,42 @@ func TestCleanUserText(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestPairToolResults_HighlightsReadOutput(t *testing.T) {
+	blocks := []contentBlock{
+		{Type: "tool_use", ToolName: "Read", ToolUseID: "t1",
+			ToolInput: json.RawMessage(`{"file_path":"main.go"}`)},
+		{Type: "tool_result", ToolUseID: "t1", Text: "package main\n\nfunc main() {}"},
+	}
+	paired := pairToolResults(blocks)
+	require.Len(t, paired, 1)
+	assert.NotEmpty(t, paired[0].ToolResultHTML)
+	assert.Contains(t, string(paired[0].ToolResultHTML), "chroma")
+}
+
+func TestPairToolResults_DiffForEditOutput(t *testing.T) {
+	blocks := []contentBlock{
+		{Type: "tool_use", ToolName: "Edit", ToolUseID: "t1",
+			ToolInput: json.RawMessage(`{"file_path":"main.go","old_string":"foo","new_string":"bar"}`)},
+		{Type: "tool_result", ToolUseID: "t1", Text: "OK"},
+	}
+	paired := pairToolResults(blocks)
+	require.Len(t, paired, 1)
+	assert.NotEmpty(t, string(paired[0].ToolResultHTML))
+	assert.Contains(t, string(paired[0].ToolResultHTML), "diff-del")
+	assert.Contains(t, string(paired[0].ToolResultHTML), "diff-add")
+}
+
+func TestPairToolResults_BashOutputPlain(t *testing.T) {
+	blocks := []contentBlock{
+		{Type: "tool_use", ToolName: "Bash", ToolUseID: "t1",
+			ToolInput: json.RawMessage(`{"command":"echo hi"}`)},
+		{Type: "tool_result", ToolUseID: "t1", Text: "hi"},
+	}
+	paired := pairToolResults(blocks)
+	require.Len(t, paired, 1)
+	assert.Equal(t, template.HTML("hi"), paired[0].ToolResultHTML)
 }
 
 func TestRenderMessagesHTML_MarkdownXSS(t *testing.T) {
